@@ -118,6 +118,13 @@ Flags:
 Start with `--dry-run` against a scratch clone. It exercises discovery, worktree creation, the
 bootstrap agent and branch naming without writing any code or touching GitHub.
 
+## Terminal output
+
+Long steps (Jira discovery, bootstrap, implementation, verification, review, push, PR creation)
+show a spinner with a live elapsed timer, so a step that takes ten minutes never looks hung. When
+output is piped or redirected the spinner is skipped and each step prints one plain line instead,
+so logs stay readable. `Ctrl-C` restores the cursor.
+
 ## Where things end up
 
 Each run creates `$TMPDIR/a11y-fixer/<repo>-<PARENT>-<timestamp>/<JIRA-KEY>/`:

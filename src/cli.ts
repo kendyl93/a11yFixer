@@ -7,6 +7,7 @@ import { checkGh, defaultBranch } from "./github.js";
 import { discoverSubtasks, isAlreadyDone, parseJiraKey } from "./discovery.js";
 import { runSubtask } from "./worker.js";
 import { printSummary } from "./report.js";
+import { spin, stopSpinner } from "./spinner.js";
 import type { Outcome, RunContext } from "./types.js";
 
 export type Args = {
@@ -94,14 +95,20 @@ async function main(): Promise<void> {
   console.log(`    base        ${baseBranch} @ ${baseSha.slice(0, 10)}`);
   console.log(`    run dir     ${runDir}`);
   console.log("");
-  console.log(`🔍  Discovering direct subtasks of ${parentKey} via Jira MCP…`);
-
-  const discovery = await discoverSubtasks({
-    parentUrl: args.parentUrl,
-    parentKey,
-    cwd: repo,
-    model: args.model,
-  });
+  const spDiscover = spin("🔍", `Discovering direct subtasks of ${parentKey} via Jira MCP…`);
+  let discovery;
+  try {
+    discovery = await discoverSubtasks({
+      parentUrl: args.parentUrl,
+      parentKey,
+      cwd: repo,
+      model: args.model,
+    });
+  } catch (err) {
+    spDiscover.stop("❌", `Discovery failed for ${parentKey}`);
+    throw err;
+  }
+  spDiscover.stop("🔍", `Discovered direct subtasks of ${parentKey} via Jira MCP`);
 
   console.log("");
   console.log(`📋  Parent: ${discovery.parent.key}  ${discovery.parent.summary}`);
@@ -137,6 +144,7 @@ async function main(): Promise<void> {
       outcomes.push(await runSubtask(ctx, subtask));
     } catch (err) {
       // One failed subtask must not stop the rest of the run.
+      stopSpinner();
       const reason = (err as Error).message;
       console.log(`   ❌  ${subtask.key} failed: ${reason.split("\n")[0]}`);
       outcomes.push({
@@ -155,6 +163,7 @@ async function main(): Promise<void> {
 const invokedDirectly = process.argv[1] && import.meta.url === `file://${path.resolve(process.argv[1])}`;
 if (invokedDirectly) {
   main().catch((err: Error) => {
+    stopSpinner();
     console.error(`\n❌  a11yFixer: ${err.message}`);
     process.exit(1);
   });

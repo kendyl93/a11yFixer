@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../src/cli.js";
 import { parseJiraKey, parseDiscovery, isAlreadyDone, parseClaim, describeClaim } from "../src/discovery.js";
-import { parseVerdict, formatFailures, formatDuration, verdictIcon } from "../src/worker.js";
+import { parseVerdict, formatFailures, verdictIcon } from "../src/worker.js";
+import { formatDuration } from "../src/spinner.js";
 import { extractJson } from "../src/claude.js";
 
 test("parseArgs reads the parent URL and --repo", () => {
