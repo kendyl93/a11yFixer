@@ -1,0 +1,17 @@
+{
+  "name": "a11y-fixer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental harness: parent Jira -> isolated subtask agents -> deterministic verification -> independent review -> small Draft PRs.",
+  "scripts": {
+    "a11y-fixer": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
