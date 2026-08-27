@@ -1,5 +1,6 @@
 import { renderPrompt, runClaude, READ_ONLY_TOOLS } from "./claude.js";
 import type { Subtask } from "./types.js";
+import type { Usage } from "./usage.js";
 
 const DISCOVERY_SCHEMA = {
   type: "object",
@@ -36,6 +37,8 @@ export type Discovery = {
   parent: { key: string; url: string; summary: string };
   subtasks: Subtask[];
 };
+
+export type DiscoveryResult = Discovery & { usage: Usage };
 
 /** Pull the issue key out of a Jira browse URL. */
 export function parseJiraKey(url: string): string | null {
@@ -99,7 +102,7 @@ export async function discoverSubtasks(opts: {
   parentKey: string;
   cwd: string;
   model: string | null;
-}): Promise<Discovery> {
+}): Promise<DiscoveryResult> {
   const prompt = await renderPrompt("discover-subtasks.md", {
     PARENT_URL: opts.parentUrl,
     PARENT_KEY: opts.parentKey,
@@ -112,7 +115,7 @@ export async function discoverSubtasks(opts: {
     model: opts.model,
     timeoutMs: 15 * 60 * 1000,
   });
-  return parseDiscovery(res.structured, opts.parentKey);
+  return { ...parseDiscovery(res.structured, opts.parentKey), usage: res.usage };
 }
 
 const CLAIM_SCHEMA = {
@@ -171,7 +174,7 @@ export async function claimSubtask(opts: {
   subtask: Subtask;
   cwd: string;
   model: string | null;
-}): Promise<Claim> {
+}): Promise<{ claim: Claim; usage: Usage }> {
   const prompt = await renderPrompt("claim-jira.md", {
     SUBTASK_URL: opts.subtask.url,
     SUBTASK_KEY: opts.subtask.key,
@@ -184,5 +187,5 @@ export async function claimSubtask(opts: {
     model: opts.model,
     timeoutMs: 10 * 60 * 1000,
   });
-  return parseClaim(res.structured);
+  return { claim: parseClaim(res.structured), usage: res.usage };
 }

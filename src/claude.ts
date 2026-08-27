@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { exec } from "./proc.js";
+import { parseUsage, type Usage } from "./usage.js";
 
 const PROMPTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "prompts");
 
@@ -32,6 +33,7 @@ export type ClaudeResponse = {
   structured: unknown;
   isError: boolean;
   raw: string;
+  usage: Usage;
 };
 
 export async function renderPrompt(
@@ -104,5 +106,6 @@ export async function runClaude(call: ClaudeCall): Promise<ClaudeResponse> {
     structured,
     isError: parsed["is_error"] === true || parsed["subtype"] !== "success",
     raw: res.stdout,
+    usage: parseUsage(parsed),
   };
 }

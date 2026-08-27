@@ -4,6 +4,7 @@ import { parseArgs } from "../src/cli.js";
 import { parseJiraKey, parseDiscovery, isAlreadyDone, parseClaim, describeClaim } from "../src/discovery.js";
 import { parseVerdict, formatFailures, verdictIcon } from "../src/worker.js";
 import { formatDuration } from "../src/spinner.js";
+import { parseUsage, addUsage, emptyUsage, contextPercent, formatTokens, formatUsd, shortModel } from "../src/usage.js";
 import { extractJson } from "../src/claude.js";
 
 test("parseArgs reads the parent URL and --repo", () => {
@@ -123,5 +124,76 @@ test("verdictIcon and formatDuration render human output", () => {
   assert.equal(verdictIcon("MANUAL_REVIEW_REQUIRED"), "👀");
   assert.equal(formatDuration(4_000), "4s");
   assert.equal(formatDuration(65_000), "1m05s");
-  assert.equal(formatDuration(3_600_000), "60m00s");
+  assert.equal(formatDuration(3_600_000), "1h00m");
+  assert.equal(formatDuration(8_064_000), "2h14m");
+});
+
+// A real (trimmed) `claude -p --output-format json` payload.
+const CLAUDE_JSON = {
+  total_cost_usd: 0.236886,
+  duration_ms: 5877,
+  usage: {
+    input_tokens: 2,
+    cache_creation_input_tokens: 58563,
+    cache_read_input_tokens: 0,
+    output_tokens: 263,
+    iterations: [
+      { input_tokens: 2, output_tokens: 120, cache_read_input_tokens: 0, cache_creation_input_tokens: 58563 },
+      { input_tokens: 4, output_tokens: 143, cache_read_input_tokens: 58563, cache_creation_input_tokens: 1200 },
+    ],
+  },
+  modelUsage: {
+    "claude-opus-5": {
+      inputTokens: 6,
+      outputTokens: 263,
+      cacheReadInputTokens: 58563,
+      cacheCreationInputTokens: 59763,
+      costUSD: 0.236886,
+      contextWindow: 1_000_000,
+    },
+  },
+};
+
+test("parseUsage reads context, tokens and cost from a real claude payload", () => {
+  const u = parseUsage(CLAUDE_JSON as unknown as Record<string, unknown>);
+  assert.equal(u.model, "claude-opus-5");
+  assert.equal(u.contextWindow, 1_000_000);
+  // Peak prompt = the largest single turn's full input, cache included.
+  assert.equal(u.peakContextTokens, 4 + 58563 + 1200);
+  assert.equal(contextPercent(u), 6);
+  // Fresh tokens only; cache reads are tracked separately so they are not double counted.
+  assert.equal(u.inputTokens, 6 + 59763);
+  assert.equal(u.outputTokens, 263);
+  assert.equal(u.cacheReadTokens, 58563);
+  assert.equal(u.costUsd, 0.236886);
+  assert.equal(u.sessions, 1);
+});
+
+test("parseUsage falls back to top-level usage when modelUsage is absent", () => {
+  const u = parseUsage({ usage: { input_tokens: 10, cache_creation_input_tokens: 5, output_tokens: 7 } });
+  assert.equal(u.inputTokens, 15);
+  assert.equal(u.outputTokens, 7);
+  assert.equal(contextPercent(u), null);
+  assert.equal(parseUsage({}).sessions, 1);
+});
+
+test("addUsage sums tokens and cost but takes the peak context, not the sum", () => {
+  const a = parseUsage(CLAUDE_JSON as unknown as Record<string, unknown>);
+  const total = addUsage(addUsage(emptyUsage(), a), a);
+  assert.equal(total.sessions, 2);
+  assert.equal(total.outputTokens, 526);
+  assert.ok(Math.abs(total.costUsd - 0.473772) < 1e-9);
+  assert.equal(total.peakContextTokens, a.peakContextTokens);
+  assert.equal(contextPercent(total), 6);
+});
+
+test("token, cost and model formatting stay compact", () => {
+  assert.equal(formatTokens(940), "940");
+  assert.equal(formatTokens(133_400), "133.4K");
+  assert.equal(formatTokens(1_600_000), "1.6M");
+  assert.equal(formatUsd(4.8), "$4.80");
+  assert.equal(formatUsd(0.004), "<$0.01");
+  assert.equal(formatUsd(0), "$0.00");
+  assert.equal(shortModel("claude-opus-5"), "opus-5");
+  assert.equal(shortModel(null), "claude");
 });

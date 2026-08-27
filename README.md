@@ -125,6 +125,34 @@ show a spinner with a live elapsed timer, so a step that takes ten minutes never
 output is piped or redirected the spinner is skipped and each step prints one plain line instead,
 so logs stay readable. `Ctrl-C` restores the cursor.
 
+## Cost and context reporting
+
+Every Claude session reports what it used, read straight from the CLI's JSON response — the
+harness estimates nothing:
+
+```
+   🧭  bootstrap — reading repository instructions…   1m02s
+      └ opus-5  ·  ctx 8% of 1M  ·  ↓ 58.6K  ↑ 1.1K  ·  $0.24
+```
+
+with a rollup per subtask and for the whole run:
+
+```
+⏱   Wall clock: 2h14m
+📊  opus-5   ·   61 Claude sessions   ·   ↓ 8.2M  ↑ 683.2K   ·   $57.34 at list price
+    peak context in a single session: 34% of 1M   ·   cache reads 128.1M
+```
+
+Three things to read carefully:
+
+- **`ctx N%`** is the largest single turn's prompt divided by the model's context window — the
+  fullest that session's context ever got. Isolated per subtask, this is the number that tells you
+  whether "one context ≈ one engineering task" is actually holding.
+- **`↓`** counts fresh tokens only (new input plus cache writes). Cache reads are reported
+  separately because summing them across turns counts the same tokens over and over.
+- **`$` is list price, not your bill.** On a Claude subscription these calls are covered by your
+  plan. Treat the figure as a relative measure of how expensive a subtask was.
+
 ## Where things end up
 
 Each run creates `$TMPDIR/a11y-fixer/<repo>-<PARENT>-<timestamp>/<JIRA-KEY>/`:

@@ -1,7 +1,15 @@
 import type { Outcome } from "./types.js";
 import { verdictIcon } from "./worker.js";
+import { formatDuration } from "./spinner.js";
+import { contextPercent, formatTokens, formatUsageTotal, formatUsd, formatWindow, shortModel, type Usage } from "./usage.js";
 
-export function printSummary(parentKey: string, discovered: number, outcomes: Outcome[]): void {
+export function printSummary(
+  parentKey: string,
+  discovered: number,
+  outcomes: Outcome[],
+  usage: Usage,
+  wallClockMs: number,
+): void {
   const prs = outcomes.filter((o): o is Extract<Outcome, { kind: "pr" }> => o.kind === "pr");
   const failed = outcomes.filter((o): o is Extract<Outcome, { kind: "failed" }> => o.kind === "failed");
   const skipped = outcomes.filter((o): o is Extract<Outcome, { kind: "skipped" }> => o.kind === "skipped");
@@ -13,14 +21,24 @@ export function printSummary(parentKey: string, discovered: number, outcomes: Ou
     "═".repeat(72),
     "",
     `📋  Parent: ${parentKey}   ·   ${discovered} direct subtask(s)`,
-  ];
+    "",
+    `⏱   Wall clock: ${formatDuration(wallClockMs)}`,
+    `📊  ${shortModel(usage.model)}   ·   ${usage.sessions} Claude sessions   ·   ` +
+      `↓ ${formatTokens(usage.inputTokens)}  ↑ ${formatTokens(usage.outputTokens)}   ·   ` +
+      `${formatUsd(usage.costUsd)} at list price`,
+    contextPercent(usage) !== null
+      ? `    peak context in a single session: ${contextPercent(usage)}% of ${formatWindow(usage.contextWindow as number)}` +
+        `   ·   cache reads ${formatTokens(usage.cacheReadTokens)}`
+      : "",
+  ].filter((l, i, all) => l !== "" || all[i - 1] !== "");
 
   if (prs.length) {
     out.push("", `✅  DRAFT PRS CREATED (${prs.length})`, "");
     for (const o of prs) {
       out.push(`    ${o.subtask.key}  ${o.subtask.summary}`);
       out.push(`      ${o.prUrl}`);
-      out.push(`      reviewer: ${verdictIcon(o.verdict)} ${o.verdict}`, "");
+      out.push(`      reviewer: ${verdictIcon(o.verdict)} ${o.verdict}`);
+      out.push(`      ${formatUsageTotal(o.usage, "cost")}`, "");
     }
   }
   if (failed.length) {
@@ -30,6 +48,7 @@ export function printSummary(parentKey: string, discovered: number, outcomes: Ou
       out.push(`      ${o.reason.split("\n")[0]}`);
       if (o.branch) out.push(`      branch:   ${o.branch}`);
       if (o.worktree) out.push(`      worktree: ${o.worktree}`);
+      if (o.usage) out.push(`      ${formatUsageTotal(o.usage, "cost")}`);
       out.push("");
     }
   }

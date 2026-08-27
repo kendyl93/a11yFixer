@@ -15,6 +15,8 @@ export type CommandResult = {
 
 export type Verdict = "PASS" | "FAIL" | "MANUAL_REVIEW_REQUIRED";
 
+import type { Usage } from "./usage.js";
+
 export type Outcome =
   | {
       kind: "pr";
@@ -23,6 +25,7 @@ export type Outcome =
       prUrl: string;
       branch: string;
       worktree: string;
+      usage: Usage;
     }
   | {
       kind: "failed";
@@ -31,11 +34,13 @@ export type Outcome =
       branch: string | null;
       worktree: string | null;
       verdict?: Verdict;
+      usage?: Usage;
     }
   | {
       kind: "skipped";
       subtask: Subtask;
       reason: string;
+      usage?: Usage;
     };
 
 export type RunContext = {

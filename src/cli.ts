@@ -7,7 +7,8 @@ import { checkGh, defaultBranch } from "./github.js";
 import { discoverSubtasks, isAlreadyDone, parseJiraKey } from "./discovery.js";
 import { runSubtask } from "./worker.js";
 import { printSummary } from "./report.js";
-import { spin, stopSpinner } from "./spinner.js";
+import { spin, stopSpinner, formatDuration } from "./spinner.js";
+import { addUsage, emptyUsage, formatUsage } from "./usage.js";
 import type { Outcome, RunContext } from "./types.js";
 
 export type Args = {
@@ -95,6 +96,7 @@ async function main(): Promise<void> {
   console.log(`    base        ${baseBranch} @ ${baseSha.slice(0, 10)}`);
   console.log(`    run dir     ${runDir}`);
   console.log("");
+  const runStarted = Date.now();
   const spDiscover = spin("🔍", `Discovering direct subtasks of ${parentKey} via Jira MCP…`);
   let discovery;
   try {
@@ -109,6 +111,7 @@ async function main(): Promise<void> {
     throw err;
   }
   spDiscover.stop("🔍", `Discovered direct subtasks of ${parentKey} via Jira MCP`);
+  console.log(`      └ ${formatUsage(discovery.usage)}`);
 
   console.log("");
   console.log(`📋  Parent: ${discovery.parent.key}  ${discovery.parent.summary}`);
@@ -157,7 +160,11 @@ async function main(): Promise<void> {
     }
   }
 
-  printSummary(discovery.parent.key, discovery.subtasks.length, outcomes);
+  const runUsage = outcomes.reduce(
+    (total, o) => (o.usage ? addUsage(total, o.usage) : total),
+    addUsage(emptyUsage(), discovery.usage),
+  );
+  printSummary(discovery.parent.key, discovery.subtasks.length, outcomes, runUsage, Date.now() - runStarted);
 }
 
 const invokedDirectly = process.argv[1] && import.meta.url === `file://${path.resolve(process.argv[1])}`;

@@ -6,6 +6,7 @@ import * as git from "./git.js";
 import { claimSubtask, describeClaim } from "./discovery.js";
 import { createDraftPr } from "./github.js";
 import { spin, stopSpinner, formatDuration } from "./spinner.js";
+import { addUsage, emptyUsage, formatUsage, formatUsageTotal, type Usage } from "./usage.js";
 import type { CommandResult, Outcome, RunContext, Subtask, Verdict } from "./types.js";
 
 const VERIFY_TIMEOUT_MS = 30 * 60 * 1000;
@@ -107,6 +108,11 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   const artifacts = path.join(dir, "artifacts");
   await mkdir(artifacts, { recursive: true });
   const started = Date.now();
+  let usage = emptyUsage();
+  const account = (u: Usage): void => {
+    usage = addUsage(usage, u);
+    detail(`└ ${formatUsage(u)}`);
+  };
 
   say();
   say("━".repeat(72));
@@ -119,7 +125,8 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     step("❌", `${subtask.key} failed after ${formatDuration(Date.now() - started)}`);
     detail(reason.split("\n")[0] ?? reason);
     detail(`worktree preserved: ${worktree}`);
-    return { kind: "failed", subtask, reason, branch, worktree, verdict };
+    detail(`└ ${formatUsageTotal(usage, "subtask")}`);
+    return { kind: "failed", subtask, reason, branch, worktree, verdict, usage };
   };
 
   // --- Step A: detached worktree pinned to BASE_SHA -------------------------
@@ -143,6 +150,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     model: ctx.model,
   });
   spBootstrap.stop();
+  account(bootstrap.usage);
   await writeFile(path.join(artifacts, "bootstrap.json"), bootstrap.raw);
 
   const implSession = bootstrap.sessionId;
@@ -173,16 +181,17 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
 
   if (ctx.dryRun) {
     step("🛑", "--dry-run: stopping before implementation (Jira untouched)");
-    return { kind: "skipped", subtask, reason: `dry run — branch ${branchName} created, no code written` };
+    return { kind: "skipped", subtask, reason: `dry run — branch ${branchName} created, no code written`, usage };
   }
 
   // --- Claim the Jira subtask, immediately before any code is written -------
   const spClaim = spin("📌", "Jira — assigning to you and moving to In Progress…");
   try {
-    const claim = await claimSubtask({ subtask, cwd: worktree, model: ctx.model });
+    const { claim, usage: claimUsage } = await claimSubtask({ subtask, cwd: worktree, model: ctx.model });
     const ok = claim.assigned && claim.transitioned;
     spClaim.stop(ok ? "📌" : "⚠️ ", `Jira — ${describeClaim(claim)}`);
     if (claim.note) detail(claim.note);
+    account(claimUsage);
   } catch (err) {
     // Never fatal: a Jira workflow hiccup must not block the engineering work.
     spClaim.stop("⚠️ ", `Jira — could not assign/transition: ${(err as Error).message.split("\n")[0]}`);
@@ -203,6 +212,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     model: ctx.model,
   });
   spImpl.stop();
+  account(impl.usage);
   await writeFile(path.join(artifacts, "implement.json"), impl.raw);
 
   await git.stageAll(worktree);
@@ -230,6 +240,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
       model: ctx.model,
     });
     spRepair.stop("🔁", "repair attempt (1 of 1)");
+    account(repair.usage);
     await writeFile(path.join(artifacts, "repair.json"), repair.raw);
 
     await git.stageAll(worktree);
@@ -266,6 +277,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     model: ctx.model,
   });
   spReview.stop("🔎", "independent review (fresh context)");
+  account(reviewRes.usage);
   await writeFile(path.join(artifacts, "review.json"), reviewRes.raw);
   const { verdict, explanation } = parseVerdict(reviewRes.structured);
   detail(`${verdictIcon(verdict)} ${verdict}`);
@@ -297,6 +309,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     model: ctx.model,
   });
   spPr.stop("📝", "commit & PR metadata prepared from repository conventions");
+  account(prMeta.usage);
   await writeFile(path.join(artifacts, "prepare-pr.json"), prMeta.raw);
   const m = (prMeta.structured ?? {}) as Record<string, unknown>;
   const commitMessage = typeof m["commitMessage"] === "string" ? m["commitMessage"].trim() : "";
@@ -341,7 +354,8 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     });
     spDraft.stop("🎉", `Draft PR created — ${subtask.key} done in ${formatDuration(Date.now() - started)}`);
     detail(prUrl);
-    return { kind: "pr", subtask, verdict, prUrl, branch: branchName, worktree };
+    detail(`└ ${formatUsageTotal(usage, "subtask")}`);
+    return { kind: "pr", subtask, verdict, prUrl, branch: branchName, worktree, usage };
   } catch (err) {
     return fail((err as Error).message, branchName, verdict);
   }

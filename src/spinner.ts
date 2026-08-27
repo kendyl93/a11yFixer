@@ -13,8 +13,10 @@ let active: Spinner | null = null;
 
 export function formatDuration(ms: number): string {
   const total = Math.round(ms / 1000);
-  const m = Math.floor(total / 60);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
   return m > 0 ? `${m}m${String(s).padStart(2, "0")}s` : `${s}s`;
 }
 
