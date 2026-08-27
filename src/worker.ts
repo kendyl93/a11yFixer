@@ -3,6 +3,7 @@ import path from "node:path";
 import { renderPrompt, runClaude, READ_ONLY_TOOLS, EDIT_NO_SHELL_TOOLS } from "./claude.js";
 import { execShell } from "./proc.js";
 import * as git from "./git.js";
+import { claimSubtask, describeClaim } from "./discovery.js";
 import { createDraftPr } from "./github.js";
 import type { CommandResult, Outcome, RunContext, Subtask, Verdict } from "./types.js";
 
@@ -47,6 +48,19 @@ export function parseVerdict(structured: unknown): { verdict: Verdict; explanati
   return { verdict, explanation: explanation || "(reviewer gave no explanation)" };
 }
 
+export function verdictIcon(verdict: Verdict): string {
+  if (verdict === "PASS") return "✅";
+  if (verdict === "FAIL") return "❌";
+  return "👀";
+}
+
+export function formatDuration(ms: number): string {
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}m${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
 function clip(text: string, max = MAX_OUTPUT_PER_COMMAND): string {
   return text.length <= max ? text : `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]`;
 }
@@ -69,16 +83,21 @@ function formatResults(results: CommandResult[]): string {
   return results.map((r) => `${r.exitCode === 0 ? "PASS" : "FAIL"} (exit ${r.exitCode}): ${r.command}`).join("\n");
 }
 
-async function runVerification(commands: string[], cwd: string, key: string): Promise<CommandResult[]> {
+const say = (line = ""): void => console.log(line);
+const step = (icon: string, text: string): void => console.log(`   ${icon}  ${text}`);
+const detail = (text: string): void => console.log(`      ${text}`);
+
+async function runVerification(commands: string[], cwd: string): Promise<CommandResult[]> {
   const results: CommandResult[] = [];
   for (const command of commands) {
+    const started = Date.now();
     const r = await execShell(command, cwd, VERIFY_TIMEOUT_MS);
     results.push({ command, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut });
     const mark = r.exitCode === 0 ? "✓" : "✗";
-    console.log(`  ${mark} ${command}`);
+    detail(`${mark} ${command}   (${formatDuration(Date.now() - started)})`);
     if (r.exitCode !== 0) {
       const tail = (r.stderr.trim() || r.stdout.trim()).split("\n").slice(-12).join("\n");
-      console.log(tail.replace(/^/gm, "      "));
+      if (tail) console.log(tail.replace(/^/gm, "         │ "));
     }
   }
   return results;
@@ -94,24 +113,28 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   const worktree = path.join(dir, "worktree");
   const artifacts = path.join(dir, "artifacts");
   await mkdir(artifacts, { recursive: true });
+  const started = Date.now();
 
-  console.log(`\n${"─".repeat(60)}\n${subtask.key}  ${subtask.summary}\n${"─".repeat(60)}`);
+  say();
+  say("━".repeat(72));
+  say(`🧩  ${subtask.key}  ${subtask.summary}`);
+  say(`    ${subtask.url}`);
+  say("━".repeat(72));
 
-  const fail = (reason: string, branch: string | null, verdict?: Verdict): Outcome => ({
-    kind: "failed",
-    subtask,
-    reason,
-    branch,
-    worktree,
-    verdict,
-  });
+  const fail = (reason: string, branch: string | null, verdict?: Verdict): Outcome => {
+    step("❌", `${subtask.key} failed after ${formatDuration(Date.now() - started)}`);
+    detail(reason.split("\n")[0] ?? reason);
+    detail(`worktree preserved: ${worktree}`);
+    return { kind: "failed", subtask, reason, branch, worktree, verdict };
+  };
 
   // --- Step A: detached worktree pinned to BASE_SHA -------------------------
-  console.log(`  worktree ← ${ctx.baseSha.slice(0, 10)}  ${worktree}`);
+  step("🌱", `worktree from ${ctx.baseSha.slice(0, 10)}`);
+  detail(worktree);
   await git.addDetachedWorktree(ctx.repoPath, worktree, ctx.baseSha);
 
   // --- Step B: bootstrap (implementation context A begins) ------------------
-  console.log("  bootstrap: reading repository instructions…");
+  step("🧭", "bootstrap — reading repository instructions…");
   const bootstrapPrompt = await renderPrompt("bootstrap.md", {
     SUBTASK_URL: subtask.url,
     SUBTASK_KEY: subtask.key,
@@ -142,23 +165,36 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     return fail(`branch already exists in the target repository: ${branchName}`, branchName);
   }
 
-  console.log(`  branch: ${branchName}`);
-  console.log(
+  detail(`branch:       ${branchName}`);
+  detail(
     verificationCommands.length
-      ? `  verification: ${verificationCommands.length} command(s) from repository conventions`
-      : "  verification: none discoverable in repository documentation",
+      ? `verification: ${verificationCommands.length} command(s) from repository conventions`
+      : "verification: none discoverable in repository documentation",
   );
+  for (const c of verificationCommands) detail(`              · ${c}`);
 
   // --- Step C: create the branch (harness owns the side effect) -------------
   await git.createBranch(worktree, branchName);
 
   if (ctx.dryRun) {
-    console.log("  --dry-run: stopping before implementation");
-    return fail("dry run", branchName);
+    step("🛑", "--dry-run: stopping before implementation (Jira untouched)");
+    return { kind: "skipped", subtask, reason: `dry run — branch ${branchName} created, no code written` };
+  }
+
+  // --- Claim the Jira subtask, immediately before any code is written -------
+  try {
+    const claim = await claimSubtask({ subtask, cwd: worktree, model: ctx.model });
+    const ok = claim.assigned && claim.transitioned;
+    step(ok ? "📌" : "⚠️ ", `Jira — ${describeClaim(claim)}`);
+    if (claim.note) detail(claim.note);
+  } catch (err) {
+    // Never fatal: a Jira workflow hiccup must not block the engineering work.
+    step("⚠️ ", `Jira — could not assign/transition: ${(err as Error).message.split("\n")[0]}`);
   }
 
   // --- Step D: implement (same context A) ----------------------------------
-  console.log("  implementing…");
+  step("🛠️ ", "implementing…");
+  const implStarted = Date.now();
   const implementPrompt = await renderPrompt("implement.md", {
     SUBTASK_KEY: subtask.key,
     BRANCH_NAME: branchName,
@@ -175,14 +211,16 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   await git.stageAll(worktree);
   let files = await git.changedFiles(worktree, ctx.baseSha);
   if (files.length === 0) return fail("implementation produced no changes", branchName);
-  console.log(`  changed files: ${files.length}`);
+  detail(`${files.length} file(s) changed   (${formatDuration(Date.now() - implStarted)})`);
 
   // --- Step E: deterministic verification (harness owns execution) ----------
-  let results = await runVerification(verificationCommands, worktree, subtask.key);
+  if (verificationCommands.length) step("🧪", "verification");
+  else step("🧪", "verification unavailable — no commands documented");
+  let results = await runVerification(verificationCommands, worktree);
 
   // --- Step F: exactly one repair attempt ----------------------------------
   if (results.some((r) => r.exitCode !== 0)) {
-    console.log("  verification failed → one repair attempt");
+    step("🔁", "repair attempt (1 of 1)");
     const repairPrompt = await renderPrompt("repair.md", {
       SUBTASK_KEY: subtask.key,
       FAILURES: formatFailures(results),
@@ -198,7 +236,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
 
     await git.stageAll(worktree);
     files = await git.changedFiles(worktree, ctx.baseSha);
-    results = await runVerification(verificationCommands, worktree, subtask.key);
+    results = await runVerification(verificationCommands, worktree);
     if (results.some((r) => r.exitCode !== 0)) {
       return fail("deterministic verification failed after one repair attempt", branchName);
     }
@@ -211,7 +249,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   await writeFile(diffPath, diff);
   await writeFile(path.join(artifacts, "verification.txt"), formatResults(results));
 
-  console.log("  independent review…");
+  step("🔎", "independent review (fresh context)…");
   const reviewPrompt = await renderPrompt("review.md", {
     SUBTASK_URL: subtask.url,
     SUBTASK_KEY: subtask.key,
@@ -231,16 +269,14 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   });
   await writeFile(path.join(artifacts, "review.json"), reviewRes.raw);
   const { verdict, explanation } = parseVerdict(reviewRes.structured);
-  console.log(`  reviewer: ${verdict}`);
+  detail(`${verdictIcon(verdict)} ${verdict}`);
+  detail(explanation.split("\n")[0] ?? "");
 
   // --- Step H ---------------------------------------------------------------
-  if (verdict === "FAIL") {
-    console.log(`    ${explanation.split("\n")[0]}`);
-    return fail(`reviewer FAIL: ${explanation}`, branchName, verdict);
-  }
+  if (verdict === "FAIL") return fail(`reviewer FAIL: ${explanation}`, branchName, verdict);
 
   // --- Step I: PR metadata from repository conventions (fresh context C) ----
-  console.log("  preparing commit/PR metadata…");
+  step("📝", "preparing commit & PR metadata from repository conventions…");
   const prPrompt = await renderPrompt("prepare-pr.md", {
     SUBTASK_URL: subtask.url,
     SUBTASK_KEY: subtask.key,
@@ -281,9 +317,10 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   }
 
   // --- Step K: push (only this branch, never forced) ------------------------
+  let remote: string;
   try {
-    const remote = await git.defaultRemote(ctx.repoPath);
-    console.log(`  pushing ${branchName} → ${remote}`);
+    remote = await git.defaultRemote(ctx.repoPath);
+    step("⬆️ ", `pushing ${branchName} → ${remote}`);
     await git.pushBranch(worktree, remote, branchName);
   } catch (err) {
     return fail(`push failed: ${(err as Error).message}`, branchName, verdict);
@@ -300,7 +337,8 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
       head: branchName,
       base: ctx.baseBranch,
     });
-    console.log(`  draft PR: ${prUrl}`);
+    step("🎉", `Draft PR created in ${formatDuration(Date.now() - started)}`);
+    detail(prUrl);
     return { kind: "pr", subtask, verdict, prUrl, branch: branchName, worktree };
   } catch (err) {
     return fail((err as Error).message, branchName, verdict);

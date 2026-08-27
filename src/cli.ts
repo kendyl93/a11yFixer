@@ -86,11 +86,15 @@ async function main(): Promise<void> {
   );
   await mkdir(runDir, { recursive: true });
 
-  console.log(`Target repo:  ${repo}`);
-  console.log(`Base branch:  ${baseBranch}`);
-  console.log(`BASE_SHA:     ${baseSha}`);
-  console.log(`Run dir:      ${runDir}`);
-  console.log(`\nDiscovering direct subtasks of ${parentKey} via Jira MCP…`);
+  console.log("");
+  console.log("═".repeat(72));
+  console.log(`🔧  a11yFixer${args.dryRun ? "   (dry run — no code, no Jira changes, no PRs)" : ""}`);
+  console.log("═".repeat(72));
+  console.log(`    repo        ${repo}`);
+  console.log(`    base        ${baseBranch} @ ${baseSha.slice(0, 10)}`);
+  console.log(`    run dir     ${runDir}`);
+  console.log("");
+  console.log(`🔍  Discovering direct subtasks of ${parentKey} via Jira MCP…`);
 
   const discovery = await discoverSubtasks({
     parentUrl: args.parentUrl,
@@ -99,12 +103,19 @@ async function main(): Promise<void> {
     model: args.model,
   });
 
-  console.log(`\nParent: ${discovery.parent.key}  ${discovery.parent.summary}`);
-  console.log(`\nDirect subtasks discovered: ${discovery.subtasks.length}\n`);
+  console.log("");
+  console.log(`📋  Parent: ${discovery.parent.key}  ${discovery.parent.summary}`);
+  console.log("");
+  console.log(`    Direct subtasks discovered: ${discovery.subtasks.length}`);
+  console.log("");
   for (const s of discovery.subtasks) {
-    console.log(`  - ${s.key}  ${s.summary}${s.status ? `  [${s.status}]` : ""}`);
+    console.log(`      ${s.key}  ${s.summary}${s.status ? `  [${s.status}]` : ""}`);
   }
-  console.log("\nLinked Jira items are NOT implementation scope.");
+  console.log("");
+  console.log("ℹ️   Linked Jira items are NOT implementation scope.");
+  if (!args.dryRun) {
+    console.log("ℹ️   Each subtask is assigned to you and moved to In Progress right before its code is written.");
+  }
 
   const ctx: RunContext = {
     repoPath: repo,
@@ -118,7 +129,7 @@ async function main(): Promise<void> {
   const outcomes: Outcome[] = [];
   for (const subtask of discovery.subtasks) {
     if (isAlreadyDone(subtask.status)) {
-      console.log(`\n${subtask.key}: skipped (status ${subtask.status})`);
+      console.log(`\n⏭️   ${subtask.key}  skipped — status is ${subtask.status}`);
       outcomes.push({ kind: "skipped", subtask, reason: `already ${subtask.status}` });
       continue;
     }
@@ -127,7 +138,7 @@ async function main(): Promise<void> {
     } catch (err) {
       // One failed subtask must not stop the rest of the run.
       const reason = (err as Error).message;
-      console.log(`  ✗ ${subtask.key} failed: ${reason.split("\n")[0]}`);
+      console.log(`   ❌  ${subtask.key} failed: ${reason.split("\n")[0]}`);
       outcomes.push({
         kind: "failed",
         subtask,
@@ -144,7 +155,7 @@ async function main(): Promise<void> {
 const invokedDirectly = process.argv[1] && import.meta.url === `file://${path.resolve(process.argv[1])}`;
 if (invokedDirectly) {
   main().catch((err: Error) => {
-    console.error(`\na11yFixer: ${err.message}`);
+    console.error(`\n❌  a11yFixer: ${err.message}`);
     process.exit(1);
   });
 }

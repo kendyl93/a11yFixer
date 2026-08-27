@@ -114,3 +114,75 @@ export async function discoverSubtasks(opts: {
   });
   return parseDiscovery(res.structured, opts.parentKey);
 }
+
+const CLAIM_SCHEMA = {
+  type: "object",
+  properties: {
+    assigned: { type: "boolean" },
+    transitioned: { type: "boolean" },
+    assignee: { type: ["string", "null"] },
+    status: { type: ["string", "null"] },
+    error: { type: ["string", "null"] },
+    note: { type: "string" },
+  },
+  required: ["assigned", "transitioned"],
+} as const;
+
+export type Claim = {
+  assigned: boolean;
+  transitioned: boolean;
+  assignee: string | null;
+  status: string | null;
+  error: string | null;
+  note: string;
+};
+
+export function parseClaim(structured: unknown): Claim {
+  const d = (structured ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+  return {
+    assigned: d["assigned"] === true,
+    transitioned: d["transitioned"] === true,
+    assignee: str(d["assignee"]),
+    status: str(d["status"]),
+    error: str(d["error"]),
+    note: str(d["note"]) ?? "",
+  };
+}
+
+/** One-line human summary of what happened to the Jira issue. */
+export function describeClaim(c: Claim): string {
+  if (c.assigned && c.transitioned) {
+    return `assigned to ${c.assignee ?? "you"} · ${c.status ?? "In Progress"}`;
+  }
+  const parts: string[] = [];
+  parts.push(c.assigned ? `assigned to ${c.assignee ?? "you"}` : "NOT assigned");
+  parts.push(c.transitioned ? `${c.status ?? "In Progress"}` : "status UNCHANGED");
+  if (c.error) parts.push(c.error);
+  return parts.join(" · ");
+}
+
+/**
+ * Claim the subtask immediately before implementation begins: assign it to the
+ * authenticated user and move it to the project's in-progress state.
+ * This is the only Jira mutation a11yFixer performs, and it is never fatal.
+ */
+export async function claimSubtask(opts: {
+  subtask: Subtask;
+  cwd: string;
+  model: string | null;
+}): Promise<Claim> {
+  const prompt = await renderPrompt("claim-jira.md", {
+    SUBTASK_URL: opts.subtask.url,
+    SUBTASK_KEY: opts.subtask.key,
+  });
+  const res = await runClaude({
+    prompt,
+    cwd: opts.cwd,
+    disallowedTools: READ_ONLY_TOOLS,
+    jsonSchema: CLAIM_SCHEMA,
+    model: opts.model,
+    timeoutMs: 10 * 60 * 1000,
+  });
+  return parseClaim(res.structured);
+}

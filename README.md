@@ -17,7 +17,8 @@ parent Jira issue
             fresh git worktree pinned to BASE_SHA
             fresh Claude session  ── bootstrap: read repo instructions → branch name + verify commands
             branch created by the harness
-            same session          ── implement
+            fresh Claude session  ── claim Jira: assign to you + move to In Progress
+            implementation session ── implement
             harness               ── run the repository's verification commands
             same session          ── one repair attempt if they failed, then re-verify
             NEW Claude session    ── independent review: PASS / FAIL / MANUAL_REVIEW_REQUIRED
@@ -37,12 +38,28 @@ BASE_SHA
 ## What it does NOT do
 
 - no merging, ever
-- no Jira mutation (no comments, transitions or edits)
+- no Jira mutation beyond claiming a subtask — see below. No comments, no resolving, no field
+  edits, and nothing at all is ever moved to Done
 - no giant combined PR — one subtask, one branch, one Draft PR
 - no shared Claude context between subtasks
 - no concurrency in v0 (subtasks run sequentially)
 - no general bug workflow yet — this v0 is accessibility-shaped
 - no hardcoded branch/commit/PR/test conventions: the target repository is the authority
+
+## The one Jira write
+
+Immediately before an implementation agent writes its first line of code, a small dedicated
+Claude session claims the subtask:
+
+- assigns it to the Atlassian account your Jira MCP is authenticated as, and
+- transitions it to whatever this project's workflow calls its in-progress state.
+
+That is the entire scope of the write. It touches only that subtask, never the parent and never a
+linked issue. It does not run in `--dry-run`, it does not run for skipped subtasks, and it never
+runs for a subtask that fails before implementation starts. If the claim fails, it is reported as
+a warning and the implementation continues — a Jira workflow hiccup should not block engineering
+work. The step is prompt-scoped (`prompts/claim-jira.md`), so a subtask that never reaches Step D
+is left exactly as it was found.
 
 ## The core principle
 
@@ -113,9 +130,11 @@ Worktrees are **never** deleted, including on failure. Clean up with
 
 ## Known v0 limitations
 
-- The implementation, review and PR agents run with `--permission-mode bypassPermissions` and
-  built-in `Bash` denied (the harness owns command execution). MCP tools are *not* restricted, so
-  "do not mutate Jira" is enforced by prompt instruction only, not by permissions.
+- Agents run with `--permission-mode bypassPermissions` and built-in `Bash` denied (the harness
+  owns command execution). MCP tools are *not* restricted, so "only the claim agent may write to
+  Jira" is enforced by prompt instruction, not by permissions.
+- The claim agent picks the in-progress transition by meaning, not by exact name. On an unusual
+  workflow it may pick the wrong one, or none — check the `📌`/`⚠️` line in the output.
 - Worktrees are clean checkouts with no installed dependencies. If verification needs an install
   step, the bootstrap agent is instructed to return it as the first verification command.
 - Exactly one repair attempt. No loops.

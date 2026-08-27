@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../src/cli.js";
-import { parseJiraKey, parseDiscovery, isAlreadyDone } from "../src/discovery.js";
-import { parseVerdict, formatFailures } from "../src/worker.js";
+import { parseJiraKey, parseDiscovery, isAlreadyDone, parseClaim, describeClaim } from "../src/discovery.js";
+import { parseVerdict, formatFailures, formatDuration, verdictIcon } from "../src/worker.js";
 import { extractJson } from "../src/claude.js";
 
 test("parseArgs reads the parent URL and --repo", () => {
@@ -95,4 +95,32 @@ test("extractJson recovers JSON from fenced or prose output", () => {
   assert.deepEqual(extractJson('```json\n{"verdict":"PASS"}\n```'), { verdict: "PASS" });
   assert.deepEqual(extractJson('Here you go: {"a":1} thanks'), { a: 1 });
   assert.equal(extractJson("no json here"), null);
+});
+
+test("parseClaim treats anything but an explicit true as not done", () => {
+  const c = parseClaim({ assigned: true, transitioned: true, assignee: "Piotr", status: "In Progress", error: null });
+  assert.deepEqual(c, { assigned: true, transitioned: true, assignee: "Piotr", status: "In Progress", error: null, note: "" });
+  assert.equal(parseClaim({ assigned: "yes", transitioned: 1 }).assigned, false);
+  assert.equal(parseClaim(null).transitioned, false);
+  assert.equal(parseClaim({ assigned: true, transitioned: true, assignee: "  " }).assignee, null);
+});
+
+test("describeClaim reports partial Jira failures instead of hiding them", () => {
+  assert.equal(
+    describeClaim(parseClaim({ assigned: true, transitioned: true, assignee: "Piotr", status: "In Progress" })),
+    "assigned to Piotr · In Progress",
+  );
+  const partial = describeClaim(parseClaim({ assigned: true, transitioned: false, assignee: "Piotr", error: "no transition found" }));
+  assert.match(partial, /status UNCHANGED/);
+  assert.match(partial, /no transition found/);
+  assert.match(describeClaim(parseClaim({ assigned: false, transitioned: false })), /NOT assigned/);
+});
+
+test("verdictIcon and formatDuration render human output", () => {
+  assert.equal(verdictIcon("PASS"), "✅");
+  assert.equal(verdictIcon("FAIL"), "❌");
+  assert.equal(verdictIcon("MANUAL_REVIEW_REQUIRED"), "👀");
+  assert.equal(formatDuration(4_000), "4s");
+  assert.equal(formatDuration(65_000), "1m05s");
+  assert.equal(formatDuration(3_600_000), "60m00s");
 });
