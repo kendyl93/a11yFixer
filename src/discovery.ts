@@ -77,6 +77,47 @@ export function jiraAccessBlock(jiraTool: string, ticketFile?: string): string {
 
 export const DEFAULT_JIRA_TOOL = "mcp__claude_ai_Atlassian__getJiraIssue";
 
+/**
+ * Tool names the Atlassian MCP server exposes for claiming an issue.
+ * ToolSearch only resolves EXACT names — a keyword search like "+atlassian" returns nothing here,
+ * so an agent left to guess these will wrongly report that no write tools exist.
+ */
+const JIRA_WRITE_TOOLS = [
+  "atlassianUserInfo",
+  "getJiraIssue",
+  "editJiraIssue",
+  "getTransitionsForJiraIssue",
+  "transitionJiraIssue",
+  "lookupJiraAccountId",
+];
+
+/** `mcp__claude_ai_Atlassian__getJiraIssue` -> `mcp__claude_ai_Atlassian__` */
+export function jiraToolPrefix(jiraTool: string): string {
+  const at = jiraTool.lastIndexOf("__");
+  return at === -1 ? "" : jiraTool.slice(0, at + 2);
+}
+
+/** The exact, comma-separated select query that loads the whole claim toolset in one call. */
+export function jiraWriteSelectQuery(jiraTool: string): string {
+  const prefix = jiraToolPrefix(jiraTool);
+  return `select:${JIRA_WRITE_TOOLS.map((t) => prefix + t).join(",")}`;
+}
+
+export function jiraWriteAccessBlock(jiraTool: string): string {
+  return [
+    "## Loading the Jira write tools",
+    "",
+    "Jira write tools are DEFERRED. Load them all in ONE call with this exact query, verbatim:",
+    "",
+    `    ToolSearch({ query: "${jiraWriteSelectQuery(jiraTool)}" })`,
+    "",
+    "Keyword and semantic searches (\"+atlassian\", \"jira transitions\") return nothing in this",
+    "environment — only exact names resolve. If you skip the query above and search instead, you",
+    "will wrongly conclude that no write tools exist. If a name in that list does not resolve, drop",
+    "just that one and continue with the rest.",
+  ].join("\n");
+}
+
 export type DiscoveryResult = Discovery & { usage: Usage };
 
 /** Pull the issue key out of a Jira browse URL. */
@@ -217,12 +258,17 @@ export async function claimSubtask(opts: {
   subtask: Subtask;
   cwd: string;
   model: string | null;
-  jiraAccess: string;
+  jiraTool: string;
+  account: { id: string; name: string | null } | null;
 }): Promise<{ claim: Claim; usage: Usage }> {
   const prompt = await renderPrompt("claim-jira.md", {
     SUBTASK_URL: opts.subtask.url,
     SUBTASK_KEY: opts.subtask.key,
-    JIRA_ACCESS: opts.jiraAccess,
+    JIRA_WRITE_ACCESS: jiraWriteAccessBlock(opts.jiraTool),
+    KNOWN_ACCOUNT: opts.account
+      ? `   A preflight check already resolved this account: ${opts.account.name ?? "(no name)"} ` +
+        `(accountId ${opts.account.id}). Confirm it with atlassianUserInfo, and use that id.`
+      : "",
   });
   const res = await runClaude({
     prompt,
@@ -302,4 +348,65 @@ export async function fetchSubtaskTicket(opts: {
     if (last.ok) break;
   }
   return { result: last, usage };
+}
+
+const VERIFY_SCHEMA = {
+  type: "object",
+  properties: {
+    writeToolsAvailable: { type: "boolean" },
+    missingTools: { type: "array", items: { type: "string" } },
+    accountId: { type: ["string", "null"] },
+    displayName: { type: ["string", "null"] },
+    transitions: { type: "array", items: { type: "string" } },
+    error: { type: ["string", "null"] },
+  },
+  required: ["writeToolsAvailable"],
+} as const;
+
+export type JiraWriteAccess = {
+  available: boolean;
+  accountId: string | null;
+  displayName: string | null;
+  transitions: string[];
+  missingTools: string[];
+  error: string | null;
+};
+
+export function parseWriteAccess(structured: unknown): JiraWriteAccess {
+  const d = (structured ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const list = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "") : [];
+  const accountId = str(d["accountId"]);
+  return {
+    // An account id is the proof the tools really worked; without it, treat write access as absent.
+    available: d["writeToolsAvailable"] === true && accountId !== null,
+    accountId,
+    displayName: str(d["displayName"]),
+    transitions: list(d["transitions"]),
+    missingTools: list(d["missingTools"]),
+    error: str(d["error"]),
+  };
+}
+
+/** Run once per run: prove Jira write access exists before spending an hour discovering it doesn't. */
+export async function verifyJiraWriteAccess(opts: {
+  sampleKey: string;
+  cwd: string;
+  model: string | null;
+  jiraTool: string;
+}): Promise<{ access: JiraWriteAccess; usage: Usage }> {
+  const prompt = await renderPrompt("verify-jira-write.md", {
+    JIRA_WRITE_ACCESS: jiraWriteAccessBlock(opts.jiraTool),
+    SAMPLE_KEY: opts.sampleKey,
+  });
+  const res = await runClaude({
+    prompt,
+    cwd: opts.cwd,
+    disallowedTools: READ_ONLY_TOOLS,
+    jsonSchema: VERIFY_SCHEMA,
+    model: opts.model,
+    timeoutMs: 10 * 60 * 1000,
+  });
+  return { access: parseWriteAccess(res.structured), usage: res.usage };
 }

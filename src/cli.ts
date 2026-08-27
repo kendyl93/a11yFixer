@@ -4,7 +4,7 @@ import path from "node:path";
 import { commandExists } from "./proc.js";
 import * as git from "./git.js";
 import { checkGh, defaultBranch } from "./github.js";
-import { discoverSubtasks, isAlreadyDone, parseJiraKey, DEFAULT_JIRA_TOOL } from "./discovery.js";
+import { discoverSubtasks, isAlreadyDone, parseJiraKey, verifyJiraWriteAccess, DEFAULT_JIRA_TOOL } from "./discovery.js";
 import { runSubtask } from "./worker.js";
 import { printSummary } from "./report.js";
 import { spin, stopSpinner, formatDuration } from "./spinner.js";
@@ -120,6 +120,7 @@ async function main(): Promise<void> {
   }
   spDiscover.stop("🔍", `Discovered direct subtasks of ${parentKey} via Jira MCP`);
   console.log(`      └ ${formatUsage(discovery.usage)}`);
+  let preflightUsage = emptyUsage();
   const jiraTool = args.jiraTool ?? discovery.jiraTool;
   console.log(`      Jira tool: ${jiraTool}`);
 
@@ -137,6 +138,37 @@ async function main(): Promise<void> {
     console.log("ℹ️   Each subtask is assigned to you and moved to In Progress right before its code is written.");
   }
 
+  // Preflight: prove Jira write access once, rather than rediscovering its absence 12 times.
+  const firstOpen = discovery.subtasks.find((s) => !isAlreadyDone(s.status)) ?? discovery.subtasks[0];
+  let jiraAccount: { id: string; name: string | null } | null = null;
+  if (firstOpen && !args.dryRun) {
+    const spVerify = spin("🔑", "verifying Jira write access…");
+    try {
+      const { access, usage } = await verifyJiraWriteAccess({
+        sampleKey: firstOpen.key,
+        cwd: repo,
+        model: args.model,
+        jiraTool,
+      });
+      preflightUsage = usage;
+      if (access.available) {
+        jiraAccount = { id: access.accountId as string, name: access.displayName };
+        spVerify.stop("🔑", `Jira write access OK — ${access.displayName ?? access.accountId}`);
+        if (access.transitions.length) {
+          console.log(`      transitions available: ${access.transitions.join(", ")}`);
+        }
+      } else {
+        spVerify.stop("⚠️ ", "Jira write access NOT available — subtasks will not be claimed");
+        if (access.error) console.log(`      ${access.error}`);
+        if (access.missingTools.length) console.log(`      missing: ${access.missingTools.join(", ")}`);
+        console.log("      Implementation still runs; assign and transition the issues yourself.");
+      }
+      console.log(`      └ ${formatUsage(usage)}`);
+    } catch (err) {
+      spVerify.stop("⚠️ ", `Jira write access check failed: ${(err as Error).message.split("\n")[0]}`);
+    }
+  }
+
   const ctx: RunContext = {
     repoPath: repo,
     baseSha,
@@ -145,6 +177,7 @@ async function main(): Promise<void> {
     model: args.model,
     dryRun: args.dryRun,
     jiraTool,
+    jiraAccount,
   };
 
   const outcomes: Outcome[] = [];
@@ -173,7 +206,7 @@ async function main(): Promise<void> {
 
   const runUsage = outcomes.reduce(
     (total, o) => (o.usage ? addUsage(total, o.usage) : total),
-    addUsage(emptyUsage(), discovery.usage),
+    addUsage(addUsage(emptyUsage(), discovery.usage), preflightUsage),
   );
   printSummary(discovery.parent.key, discovery.subtasks.length, outcomes, runUsage, Date.now() - runStarted);
 }

@@ -4,6 +4,7 @@ import { parseArgs } from "../src/cli.js";
 import {
   parseJiraKey, parseDiscovery, isAlreadyDone, parseClaim, describeClaim,
   jiraAccessBlock, validateTicket, DEFAULT_JIRA_TOOL,
+  jiraToolPrefix, jiraWriteSelectQuery, parseWriteAccess,
 } from "../src/discovery.js";
 import { parseVerdict, formatFailures, verdictIcon } from "../src/worker.js";
 import { formatDuration } from "../src/spinner.js";
@@ -240,4 +241,26 @@ test("parseArgs validates --jira-tool", () => {
     "mcp__foo__getJiraIssue",
   );
   assert.throws(() => parseArgs(["RAD-1", "--repo", "/r", "--jira-tool", "atlassian"]), /full MCP tool name/);
+});
+
+test("jiraWriteSelectQuery builds one exact multi-tool query from the discovered prefix", () => {
+  assert.equal(jiraToolPrefix("mcp__claude_ai_Atlassian__getJiraIssue"), "mcp__claude_ai_Atlassian__");
+  const q = jiraWriteSelectQuery("mcp__other__getJiraIssue");
+  assert.ok(q.startsWith("select:"));
+  // Every tool is fully qualified with the same prefix, comma separated, no spaces.
+  assert.ok(!q.includes(" "));
+  assert.match(q, /mcp__other__atlassianUserInfo/);
+  assert.match(q, /mcp__other__transitionJiraIssue/);
+  assert.equal(q.slice("select:".length).split(",").length, 6);
+});
+
+test("parseWriteAccess demands a resolved account id as proof, not a claim of success", () => {
+  const ok = parseWriteAccess({ writeToolsAvailable: true, accountId: "712020:abc", displayName: "P", transitions: ["In Progress"] });
+  assert.equal(ok.available, true);
+  assert.deepEqual(ok.transitions, ["In Progress"]);
+  // Says yes but resolved nobody -> not available.
+  assert.equal(parseWriteAccess({ writeToolsAvailable: true, accountId: null }).available, false);
+  assert.equal(parseWriteAccess({ writeToolsAvailable: false, accountId: "x" }).available, false);
+  assert.equal(parseWriteAccess(null).available, false);
+  assert.deepEqual(parseWriteAccess({ writeToolsAvailable: false, missingTools: ["a", 3] }).missingTools, ["a"]);
 });

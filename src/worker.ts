@@ -216,7 +216,8 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
       subtask,
       cwd: worktree,
       model: ctx.model,
-      jiraAccess,
+      jiraTool: ctx.jiraTool,
+      account: ctx.jiraAccount,
     });
     const ok = claim.assigned && claim.transitioned;
     spClaim.stop(ok ? "📌" : "⚠️ ", `Jira — ${describeClaim(claim)}`);

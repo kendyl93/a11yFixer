@@ -51,4 +51,5 @@ export type RunContext = {
   model: string | null;
   dryRun: boolean;
   jiraTool: string;
+  jiraAccount: { id: string; name: string | null } | null;
 };

@@ -82,6 +82,27 @@ Two defences:
    Bootstrap, implement, review and PR-prep all read that file. They can still query Jira for
    extra detail, but none of them can silently proceed on a guess.
 
+3. **Write tools are named explicitly, and proved once up front.** `select:` resolves exact names
+   only — keyword searches like `+atlassian` return nothing here — so the harness builds the whole
+   query from the discovered prefix rather than letting an agent guess:
+
+   ```
+   select:mcp__claude_ai_Atlassian__atlassianUserInfo,…__editJiraIssue,
+          …__getTransitionsForJiraIssue,…__transitionJiraIssue,…__lookupJiraAccountId
+   ```
+
+   A preflight runs this once per run, before any subtask, and reports what it found:
+
+   ```
+   🔑  Jira write access OK — Paweł Stanecki   9s
+      transitions available: In Planning, Ready To Start, In Progress, Code Review, …
+   ```
+
+   The check only passes if `atlassianUserInfo` actually returned an account id — a self-reported
+   "yes" is not accepted as proof. The resolved account is handed to each claim agent so it does
+   not re-derive it. If the preflight fails it warns and the run continues unclaimed; missing
+   write access is not a reason to skip the engineering work.
+
 ## The one Jira write
 
 Immediately before an implementation agent writes its first line of code, a small dedicated
@@ -220,5 +241,6 @@ Worktrees are **never** deleted, including on failure. Clean up with
   floor cost of a subtask. `--strict-mcp-config` with a hand-declared Atlassian server would fix
   that, but a hand-declared server needs its own OAuth and cannot reuse the claude.ai connector's
   credentials, so v0 does not do it.
-- The Jira *write* step (claim) still depends on write tools being loadable at run time. It is
-  reported and non-fatal, unlike the read path which is fatal.
+- The write-tool name list is specific to the Atlassian MCP server's vocabulary. A different Jira
+  MCP server would need that list adjusting; the prefix is discovered, the tool names are not.
+- Missing write access is reported and non-fatal, unlike the read path which is fatal.
