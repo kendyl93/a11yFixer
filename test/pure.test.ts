@@ -4,7 +4,7 @@ import { parseArgs } from "../src/cli.js";
 import {
   parseJiraKey, parseDiscovery, isAlreadyDone, parseClaim, describeClaim,
   jiraAccessBlock, validateTicket, DEFAULT_JIRA_TOOL,
-  jiraToolPrefix, jiraWriteSelectQuery, parseWriteAccess,
+  jiraToolPrefix, jiraWriteSelectQuery, parseJiraCheck,
 } from "../src/discovery.js";
 import { parseVerdict, formatFailures, verdictIcon } from "../src/worker.js";
 import { formatDuration } from "../src/spinner.js";
@@ -254,13 +254,23 @@ test("jiraWriteSelectQuery builds one exact multi-tool query from the discovered
   assert.equal(q.slice("select:".length).split(",").length, 6);
 });
 
-test("parseWriteAccess demands a resolved account id as proof, not a claim of success", () => {
-  const ok = parseWriteAccess({ writeToolsAvailable: true, accountId: "712020:abc", displayName: "P", transitions: ["In Progress"] });
-  assert.equal(ok.available, true);
-  assert.deepEqual(ok.transitions, ["In Progress"]);
-  // Says yes but resolved nobody -> not available.
-  assert.equal(parseWriteAccess({ writeToolsAvailable: true, accountId: null }).available, false);
-  assert.equal(parseWriteAccess({ writeToolsAvailable: false, accountId: "x" }).available, false);
-  assert.equal(parseWriteAccess(null).available, false);
-  assert.deepEqual(parseWriteAccess({ writeToolsAvailable: false, missingTools: ["a", 3] }).missingTools, ["a"]);
+test("parseJiraCheck demands observed proof, not a self-reported success", () => {
+  const good = {
+    readOk: true, writeOk: true, jiraToolName: "mcp__claude_ai_Atlassian__getJiraIssue",
+    parentSummary: "Deque Audit", accountId: "712020:abc", displayName: "P",
+    transitions: ["In Progress", "Done"], missingTools: [],
+  };
+  const c = parseJiraCheck(good, DEFAULT_JIRA_TOOL);
+  assert.equal(c.readOk, true);
+  assert.equal(c.writeOk, true);
+  assert.equal(c.jiraTool, "mcp__claude_ai_Atlassian__getJiraIssue");
+  assert.deepEqual(c.transitions, ["In Progress", "Done"]);
+
+  // Claims a read but produced no summary -> not proven.
+  assert.equal(parseJiraCheck({ ...good, parentSummary: null }, DEFAULT_JIRA_TOOL).readOk, false);
+  // Claims a write but resolved nobody -> not proven.
+  assert.equal(parseJiraCheck({ ...good, accountId: null }, DEFAULT_JIRA_TOOL).writeOk, false);
+  // Prose instead of a tool name falls back to the default.
+  assert.equal(parseJiraCheck({ ...good, jiraToolName: "the jira one" }, DEFAULT_JIRA_TOOL).jiraTool, DEFAULT_JIRA_TOOL);
+  assert.equal(parseJiraCheck(null, DEFAULT_JIRA_TOOL).readOk, false);
 });

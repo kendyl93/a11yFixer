@@ -350,21 +350,27 @@ export async function fetchSubtaskTicket(opts: {
   return { result: last, usage };
 }
 
-const VERIFY_SCHEMA = {
+const CHECK_SCHEMA = {
   type: "object",
   properties: {
-    writeToolsAvailable: { type: "boolean" },
+    readOk: { type: "boolean" },
+    writeOk: { type: "boolean" },
+    jiraToolName: { type: ["string", "null"] },
+    parentSummary: { type: ["string", "null"] },
     missingTools: { type: "array", items: { type: "string" } },
     accountId: { type: ["string", "null"] },
     displayName: { type: ["string", "null"] },
     transitions: { type: "array", items: { type: "string" } },
     error: { type: ["string", "null"] },
   },
-  required: ["writeToolsAvailable"],
+  required: ["readOk", "writeOk"],
 } as const;
 
-export type JiraWriteAccess = {
-  available: boolean;
+export type JiraCheck = {
+  readOk: boolean;
+  writeOk: boolean;
+  jiraTool: string;
+  parentSummary: string | null;
   accountId: string | null;
   displayName: string | null;
   transitions: string[];
@@ -372,15 +378,23 @@ export type JiraWriteAccess = {
   error: string | null;
 };
 
-export function parseWriteAccess(structured: unknown): JiraWriteAccess {
+export function parseJiraCheck(structured: unknown, fallbackTool: string): JiraCheck {
   const d = (structured ?? {}) as Record<string, unknown>;
   const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
   const list = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "") : [];
+
+  const parentSummary = str(d["parentSummary"]);
   const accountId = str(d["accountId"]);
+  const reported = str(d["jiraToolName"]) ?? "";
+
   return {
-    // An account id is the proof the tools really worked; without it, treat write access as absent.
-    available: d["writeToolsAvailable"] === true && accountId !== null,
+    // Proof, not self-report: a read is only OK if a summary actually came back.
+    readOk: d["readOk"] === true && parentSummary !== null,
+    // …and a write path is only OK if an account id actually came back.
+    writeOk: d["writeOk"] === true && accountId !== null,
+    jiraTool: /^mcp__\w+__\w+$/.test(reported) ? reported : fallbackTool,
+    parentSummary,
     accountId,
     displayName: str(d["displayName"]),
     transitions: list(d["transitions"]),
@@ -389,24 +403,29 @@ export function parseWriteAccess(structured: unknown): JiraWriteAccess {
   };
 }
 
-/** Run once per run: prove Jira write access exists before spending an hour discovering it doesn't. */
-export async function verifyJiraWriteAccess(opts: {
-  sampleKey: string;
+/**
+ * First thing every run does: prove Jira is reachable for reads and writes before spending
+ * an hour of compute on the assumption that it is.
+ */
+export async function checkJiraConnection(opts: {
+  parentUrl: string;
+  parentKey: string;
   cwd: string;
   model: string | null;
   jiraTool: string;
-}): Promise<{ access: JiraWriteAccess; usage: Usage }> {
-  const prompt = await renderPrompt("verify-jira-write.md", {
+}): Promise<{ check: JiraCheck; usage: Usage }> {
+  const prompt = await renderPrompt("check-jira.md", {
+    PARENT_URL: opts.parentUrl,
+    PARENT_KEY: opts.parentKey,
     JIRA_WRITE_ACCESS: jiraWriteAccessBlock(opts.jiraTool),
-    SAMPLE_KEY: opts.sampleKey,
   });
   const res = await runClaude({
     prompt,
     cwd: opts.cwd,
     disallowedTools: READ_ONLY_TOOLS,
-    jsonSchema: VERIFY_SCHEMA,
+    jsonSchema: CHECK_SCHEMA,
     model: opts.model,
     timeoutMs: 10 * 60 * 1000,
   });
-  return { access: parseWriteAccess(res.structured), usage: res.usage };
+  return { check: parseJiraCheck(res.structured, opts.jiraTool), usage: res.usage };
 }

@@ -4,7 +4,7 @@ import path from "node:path";
 import { commandExists } from "./proc.js";
 import * as git from "./git.js";
 import { checkGh, defaultBranch } from "./github.js";
-import { discoverSubtasks, isAlreadyDone, parseJiraKey, verifyJiraWriteAccess, DEFAULT_JIRA_TOOL } from "./discovery.js";
+import { discoverSubtasks, isAlreadyDone, parseJiraKey, checkJiraConnection, DEFAULT_JIRA_TOOL } from "./discovery.js";
 import { runSubtask } from "./worker.js";
 import { printSummary } from "./report.js";
 import { spin, stopSpinner, formatDuration } from "./spinner.js";
@@ -104,6 +104,46 @@ async function main(): Promise<void> {
   console.log(`    run dir     ${runDir}`);
   console.log("");
   const runStarted = Date.now();
+
+  // Step 0: prove the Jira connection before anything else, dry run included.
+  const spCheck = spin("🔑", "checking Jira connection…");
+  const { check, usage: checkUsage } = await checkJiraConnection({
+    parentUrl: args.parentUrl,
+    parentKey,
+    cwd: repo,
+    model: args.model,
+    jiraTool: args.jiraTool ?? DEFAULT_JIRA_TOOL,
+  });
+
+  if (!check.readOk) {
+    spCheck.stop("❌", "Jira connection FAILED — cannot read issues");
+    console.log(`      ${check.error ?? "the check could not fetch the parent issue"}`);
+    if (check.missingTools.length) console.log(`      tools that did not resolve: ${check.missingTools.join(", ")}`);
+    console.log("");
+    console.log("   Jira MCP must be reachable before a11yFixer can do anything useful.");
+    console.log("   Check `claude mcp list` shows your Atlassian server as Connected, and that");
+    console.log(`   ${parentKey} exists and is visible to your account.`);
+    console.log(`   If your Jira MCP server is named differently, pass --jira-tool <mcp__server__getJiraIssue>.`);
+    throw new Error("Jira connection check failed");
+  }
+
+  spCheck.stop("🔑", "Jira connection OK");
+  console.log(`      read   ✔  ${check.jiraTool}`);
+  console.log(`             ${parentKey} — ${check.parentSummary}`);
+  if (check.writeOk) {
+    console.log(`      write  ✔  ${check.displayName ?? check.accountId}`);
+    if (check.transitions.length) console.log(`             transitions: ${check.transitions.join(", ")}`);
+  } else {
+    console.log("      write  ✖  no Jira write tools — subtasks will NOT be assigned or moved to In Progress");
+    if (check.error) console.log(`             ${check.error}`);
+    if (check.missingTools.length) console.log(`             missing: ${check.missingTools.join(", ")}`);
+  }
+  console.log(`      └ ${formatUsage(checkUsage)}`);
+  console.log("");
+
+  const jiraTool = args.jiraTool ?? check.jiraTool;
+  const jiraAccount = check.writeOk ? { id: check.accountId as string, name: check.displayName } : null;
+
   const spDiscover = spin("🔍", `Discovering direct subtasks of ${parentKey} via Jira MCP…`);
   let discovery;
   try {
@@ -112,7 +152,7 @@ async function main(): Promise<void> {
       parentKey,
       cwd: repo,
       model: args.model,
-      jiraTool: args.jiraTool ?? DEFAULT_JIRA_TOOL,
+      jiraTool,
     });
   } catch (err) {
     spDiscover.stop("❌", `Discovery failed for ${parentKey}`);
@@ -120,9 +160,6 @@ async function main(): Promise<void> {
   }
   spDiscover.stop("🔍", `Discovered direct subtasks of ${parentKey} via Jira MCP`);
   console.log(`      └ ${formatUsage(discovery.usage)}`);
-  let preflightUsage = emptyUsage();
-  const jiraTool = args.jiraTool ?? discovery.jiraTool;
-  console.log(`      Jira tool: ${jiraTool}`);
 
   console.log("");
   console.log(`📋  Parent: ${discovery.parent.key}  ${discovery.parent.summary}`);
@@ -136,37 +173,6 @@ async function main(): Promise<void> {
   console.log("ℹ️   Linked Jira items are NOT implementation scope.");
   if (!args.dryRun) {
     console.log("ℹ️   Each subtask is assigned to you and moved to In Progress right before its code is written.");
-  }
-
-  // Preflight: prove Jira write access once, rather than rediscovering its absence 12 times.
-  const firstOpen = discovery.subtasks.find((s) => !isAlreadyDone(s.status)) ?? discovery.subtasks[0];
-  let jiraAccount: { id: string; name: string | null } | null = null;
-  if (firstOpen && !args.dryRun) {
-    const spVerify = spin("🔑", "verifying Jira write access…");
-    try {
-      const { access, usage } = await verifyJiraWriteAccess({
-        sampleKey: firstOpen.key,
-        cwd: repo,
-        model: args.model,
-        jiraTool,
-      });
-      preflightUsage = usage;
-      if (access.available) {
-        jiraAccount = { id: access.accountId as string, name: access.displayName };
-        spVerify.stop("🔑", `Jira write access OK — ${access.displayName ?? access.accountId}`);
-        if (access.transitions.length) {
-          console.log(`      transitions available: ${access.transitions.join(", ")}`);
-        }
-      } else {
-        spVerify.stop("⚠️ ", "Jira write access NOT available — subtasks will not be claimed");
-        if (access.error) console.log(`      ${access.error}`);
-        if (access.missingTools.length) console.log(`      missing: ${access.missingTools.join(", ")}`);
-        console.log("      Implementation still runs; assign and transition the issues yourself.");
-      }
-      console.log(`      └ ${formatUsage(usage)}`);
-    } catch (err) {
-      spVerify.stop("⚠️ ", `Jira write access check failed: ${(err as Error).message.split("\n")[0]}`);
-    }
   }
 
   const ctx: RunContext = {
@@ -206,7 +212,7 @@ async function main(): Promise<void> {
 
   const runUsage = outcomes.reduce(
     (total, o) => (o.usage ? addUsage(total, o.usage) : total),
-    addUsage(addUsage(emptyUsage(), discovery.usage), preflightUsage),
+    addUsage(addUsage(emptyUsage(), discovery.usage), checkUsage),
   );
   printSummary(discovery.parent.key, discovery.subtasks.length, outcomes, runUsage, Date.now() - runStarted);
 }

@@ -82,26 +82,35 @@ Two defences:
    Bootstrap, implement, review and PR-prep all read that file. They can still query Jira for
    extra detail, but none of them can silently proceed on a guess.
 
-3. **Write tools are named explicitly, and proved once up front.** `select:` resolves exact names
-   only — keyword searches like `+atlassian` return nothing here — so the harness builds the whole
-   query from the discovered prefix rather than letting an agent guess:
+3. **Write tools are named explicitly, and the whole connection is proved before anything else.**
+   `select:` resolves exact names only — keyword searches like `+atlassian` return nothing here —
+   so the harness builds the whole query from the discovered prefix rather than letting an agent
+   guess:
 
    ```
    select:mcp__claude_ai_Atlassian__atlassianUserInfo,…__editJiraIssue,
           …__getTransitionsForJiraIssue,…__transitionJiraIssue,…__lookupJiraAccountId
    ```
 
-   A preflight runs this once per run, before any subtask, and reports what it found:
+   **This is the very first thing every run does**, `--dry-run` included, before a worktree exists
+   or a subtask is discovered:
 
    ```
-   🔑  Jira write access OK — Paweł Stanecki   9s
-      transitions available: In Planning, Ready To Start, In Progress, Code Review, …
+   🔑  Jira connection OK   31s
+      read   ✔  mcp__claude_ai_Atlassian__getJiraIssue
+             RAD-85350 — Deque Audit: Apply video player accessibility fixes across package
+      write  ✔  Paweł Stanecki
+             transitions: In Planning, Ready To Start, In Progress, Code Review, …, Done
    ```
 
-   The check only passes if `atlassianUserInfo` actually returned an account id — a self-reported
-   "yes" is not accepted as proof. The resolved account is handed to each claim agent so it does
-   not re-derive it. If the preflight fails it warns and the run continues unclaimed; missing
-   write access is not a reason to skip the engineering work.
+   Neither tick is a self-report. `read` passes only if the parent issue's summary actually came
+   back — which also proves the issue exists and you can see it. `write` passes only if
+   `atlassianUserInfo` actually returned an account id, and that account is then handed to every
+   claim agent so none of them re-derive it.
+
+   **A failed read check aborts the run immediately**, with the tools that did not resolve and
+   what to try next. A failed write check warns and continues unclaimed — missing write access is
+   not a reason to skip the engineering work.
 
 ## The one Jira write
 
@@ -173,8 +182,10 @@ Flags:
 | `--allow-missing-token` | skip the `CLAUDE_CODE_OAUTH_TOKEN` check when the machine is already authenticated interactively |
 | `--jira-tool <name>` | full MCP tool name for reading Jira; defaults to what discovery reports |
 
-Start with `--dry-run` against a scratch clone. It exercises discovery, worktree creation, the
-bootstrap agent and branch naming without writing any code or touching GitHub.
+Start with `--dry-run`. It runs the Jira connection check, discovery, the per-subtask ticket
+fetch, worktree creation, the bootstrap agent and branch naming — without writing any code,
+changing any Jira issue, or touching GitHub. If Jira is misconfigured you find out in about
+30 seconds rather than 30 minutes.
 
 ## Terminal output
 
