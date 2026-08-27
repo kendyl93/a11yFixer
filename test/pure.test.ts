@@ -274,3 +274,15 @@ test("parseJiraCheck demands observed proof, not a self-reported success", () =>
   assert.equal(parseJiraCheck({ ...good, jiraToolName: "the jira one" }, DEFAULT_JIRA_TOOL).jiraTool, DEFAULT_JIRA_TOOL);
   assert.equal(parseJiraCheck(null, DEFAULT_JIRA_TOOL).readOk, false);
 });
+
+test("parseArgs survives paste artifacts and explains a real stray argument", () => {
+  // Empty args and a lone backslash from a mangled multi-line paste are ignored.
+  const a = parseArgs(["RAD-1", "", "\\", "--repo", " /tmp/r ", "--dry-run"]);
+  assert.equal(a.repo, "/tmp/r");
+  assert.equal(a.dryRun, true);
+  // A genuine stray argument still fails, but says what it saw and how to fix it.
+  assert.throws(
+    () => parseArgs(["RAD-1", "--repo", "/tmp/r", "took"]),
+    /unexpected argument: "took"[\s\S]*single-line form/,
+  );
+});

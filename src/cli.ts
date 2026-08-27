@@ -29,15 +29,25 @@ export function parseArgs(argv: string[]): Args {
   let jiraTool: string | null = null;
 
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i] as string;
-    if (a === "--repo") repo = argv[++i] ?? "";
-    else if (a === "--model") model = argv[++i] ?? null;
+    const a = (argv[i] as string).trim();
+    // A stray backslash or pasted shell decoration produces empty args; ignore rather than choke.
+    if (a === "" || a === "\\") continue;
+    if (a === "--repo") repo = (argv[++i] ?? "").trim();
+    else if (a === "--model") model = (argv[++i] ?? "").trim() || null;
     else if (a === "--dry-run") dryRun = true;
     else if (a === "--allow-missing-token") allowMissingToken = true;
-    else if (a === "--jira-tool") jiraTool = argv[++i] ?? "";
+    else if (a === "--jira-tool") jiraTool = (argv[++i] ?? "").trim();
     else if (a.startsWith("--")) throw new Error(`unknown flag: ${a}`);
     else if (!parentUrl) parentUrl = a;
-    else throw new Error(`unexpected argument: ${a}`);
+    else {
+      throw new Error(
+        `unexpected argument: "${a}"\n` +
+          `  Received: ${argv.map((x) => JSON.stringify(x)).join(" ")}\n` +
+          "  If you pasted a multi-line command, your shell prompt decoration may have been\n" +
+          "  pasted with it. Try the single-line form:\n" +
+          "    npm run a11y-fixer -- <jira-url> --repo <path> --dry-run",
+      );
+    }
   }
 
   if (!parentUrl) throw new Error("missing parent Jira URL");
