@@ -14,11 +14,13 @@ Changed files:
 Deterministic verification results (run by the harness, not by the implementer):
 {{VERIFICATION_RESULTS}}
 
+{{JIRA_ACCESS}}
+
 ## Do this
 
-1. Fetch the exact Jira subtask using the Jira MCP server configured in this environment. If
-   Jira/Atlassian MCP tools are not in your tool list, use `ToolSearch` to load them. Judge the
-   change against what the ticket actually asks for.
+1. Read the Jira ticket file above in full and judge the change against what the ticket actually
+   asks for, criterion by criterion. An implementation that satisfies most of the acceptance
+   criteria and silently drops one is not a PASS.
 2. Independently discover and read the repository instructions that apply to the changed files —
    root and nested `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, accessibility and testing docs,
    package docs, whatever this repository actually has. Do not assume; look.

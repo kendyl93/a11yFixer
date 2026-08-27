@@ -3,10 +3,15 @@ an implementation agent starts writing code. This is your only job.
 
 Jira subtask: {{SUBTASK_URL}} ({{SUBTASK_KEY}})
 
+{{JIRA_ACCESS}}
+
+You need Jira WRITE tools here, not just the read tool. Load them by exact name with the same
+server prefix — for example the tools that edit an issue, list its transitions, transition it,
+and return the authenticated user's info.
+
 ## Do this
 
-1. If Jira/Atlassian MCP tools are not in your tool list, use `ToolSearch` to load them
-   (search for "jira issue atlassian transitions assignee").
+1. Load the Jira write tools using exact `select:` queries as described above.
 2. Resolve the CURRENT Atlassian user — the account this MCP connection is authenticated as.
    There is a tool that returns the authenticated user's info; use it. That account is "me".
 3. Assign the subtask to that account.

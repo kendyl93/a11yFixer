@@ -7,6 +7,8 @@ Branch: {{BRANCH_NAME}}
 The complete diff is at:
 {{DIFF_PATH}}
 
+{{JIRA_ACCESS}}
+
 Changed files:
 {{CHANGED_FILES}}
 
@@ -17,7 +19,7 @@ Changed files:
    message rules or commitlint config, `.github/pull_request_template.md` and any variants under
    `.github/PULL_REQUEST_TEMPLATE/`, and any documented Jira-linking convention.
 2. Read the diff so the text describes what genuinely changed.
-3. Fetch the Jira subtask via the Jira MCP if you need its title or context. Do not modify Jira.
+3. Read the Jira ticket file above if you need the issue's title or context. Do not modify Jira.
 
 ## Rules
 

@@ -46,6 +46,42 @@ BASE_SHA
 - no general bug workflow yet — this v0 is accessibility-shaped
 - no hardcoded branch/commit/PR/test conventions: the target repository is the authority
 
+## Jira access is verified, never assumed
+
+Claude Code defers MCP tools when many servers are configured. With ~350 tools available, an
+agent that runs a *semantic* `ToolSearch` ("jira atlassian issue") can get nothing back and
+conclude Jira is unavailable — then carry on and implement from the issue key alone. That failure
+is silent and it makes every downstream result untrustworthy.
+
+Two defences:
+
+1. **Exact tool loading.** Every Jira-touching prompt is given the tool's full name and told to
+   load it with an exact select query, which is deterministic:
+
+   ```
+   ToolSearch({ query: "select:mcp__claude_ai_Atlassian__getJiraIssue" })
+   ```
+
+   The discovery agent reports the tool name it actually used, and that name is threaded into
+   every later agent. Override with `--jira-tool <mcp__server__tool>` if your server is named
+   differently.
+
+2. **Fetch once, verify, then work from the file.** Before a worktree does anything else, a small
+   dedicated session transcribes the subtask verbatim to
+   `artifacts/<KEY>.jira.md`. The harness checks the result is a real ticket — the agent claimed
+   success, the text is long enough, and it mentions the issue key. It retries once. **If it still
+   fails, the subtask fails right there**, before a branch is created or a line of code is
+   written:
+
+   ```
+   ❌  RAD-85351 failed after 41s
+      Jira unavailable: agent reported it could not reach Jira. Refusing to implement a
+      ticket that was never read.
+   ```
+
+   Bootstrap, implement, review and PR-prep all read that file. They can still query Jira for
+   extra detail, but none of them can silently proceed on a guess.
+
 ## The one Jira write
 
 Immediately before an implementation agent writes its first line of code, a small dedicated
@@ -114,6 +150,7 @@ Flags:
 | `--model <alias>` | model for every Claude session, e.g. `opus` |
 | `--dry-run` | stop each subtask after the branch is created — no implementation, no push, no PR |
 | `--allow-missing-token` | skip the `CLAUDE_CODE_OAUTH_TOKEN` check when the machine is already authenticated interactively |
+| `--jira-tool <name>` | full MCP tool name for reading Jira; defaults to what discovery reports |
 
 Start with `--dry-run` against a scratch clone. It exercises discovery, worktree creation, the
 bootstrap agent and branch naming without writing any code or touching GitHub.
@@ -158,7 +195,11 @@ Three things to read carefully:
 Each run creates `$TMPDIR/a11y-fixer/<repo>-<PARENT>-<timestamp>/<JIRA-KEY>/`:
 
 - `worktree/` — the isolated checkout and branch
-- `artifacts/` — `diff.patch`, `verification.txt`, and the raw JSON from each Claude session
+- `artifacts/` — `<KEY>.jira.md` (the verbatim ticket every agent worked from), `diff.patch`,
+  `verification.txt`, and the raw JSON from each Claude session
+
+`<KEY>.jira.md` is the file to open when a PR looks wrong: it is exactly what the agents were
+told the task was.
 
 Worktrees are **never** deleted, including on failure. Clean up with
 `git -C <repo> worktree prune` after removing the directories.
@@ -175,3 +216,9 @@ Worktrees are **never** deleted, including on failure. Clean up with
 - Exactly one repair attempt. No loops.
 - `--tools ""` is deliberately not used to sandbox agents: it removes `ToolSearch`, which is how
   deferred MCP tools (including Jira) get loaded, and silently breaks Jira access.
+- Deferred MCP tool schemas cost roughly 50K input tokens in every session, which is most of the
+  floor cost of a subtask. `--strict-mcp-config` with a hand-declared Atlassian server would fix
+  that, but a hand-declared server needs its own OAuth and cannot reuse the claude.ai connector's
+  credentials, so v0 does not do it.
+- The Jira *write* step (claim) still depends on write tools being loadable at run time. It is
+  reported and non-fatal, unlike the read path which is fatal.

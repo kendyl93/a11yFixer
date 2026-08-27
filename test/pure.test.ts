@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../src/cli.js";
-import { parseJiraKey, parseDiscovery, isAlreadyDone, parseClaim, describeClaim } from "../src/discovery.js";
+import {
+  parseJiraKey, parseDiscovery, isAlreadyDone, parseClaim, describeClaim,
+  jiraAccessBlock, validateTicket, DEFAULT_JIRA_TOOL,
+} from "../src/discovery.js";
 import { parseVerdict, formatFailures, verdictIcon } from "../src/worker.js";
 import { formatDuration } from "../src/spinner.js";
 import { parseUsage, addUsage, emptyUsage, contextPercent, formatTokens, formatUsd, shortModel } from "../src/usage.js";
@@ -196,4 +199,45 @@ test("token, cost and model formatting stay compact", () => {
   assert.equal(formatUsd(0), "$0.00");
   assert.equal(shortModel("claude-opus-5"), "opus-5");
   assert.equal(shortModel(null), "claude");
+});
+
+test("parseDiscovery captures the exact Jira tool name and rejects junk", () => {
+  const withTool = { ...discovery, jiraToolName: "mcp__claude_ai_Atlassian__getJiraIssue" };
+  assert.equal(parseDiscovery(withTool, "RAD-85350").jiraTool, "mcp__claude_ai_Atlassian__getJiraIssue");
+  // A prose answer must not become a tool name.
+  assert.equal(parseDiscovery({ ...discovery, jiraToolName: "the jira tool" }, "RAD-85350").jiraTool, DEFAULT_JIRA_TOOL);
+  assert.equal(parseDiscovery(discovery, "RAD-85350").jiraTool, DEFAULT_JIRA_TOOL);
+});
+
+test("jiraAccessBlock gives an exact select query, not a semantic search", () => {
+  const block = jiraAccessBlock("mcp__claude_ai_Atlassian__getJiraIssue");
+  assert.match(block, /select:mcp__claude_ai_Atlassian__getJiraIssue/);
+  assert.match(block, /prefix/);
+  assert.ok(!block.includes("/tmp/ticket.md"));
+
+  const withTicket = jiraAccessBlock("mcp__claude_ai_Atlassian__getJiraIssue", "/tmp/ticket.md");
+  assert.match(withTicket, /\/tmp\/ticket\.md/);
+  assert.match(withTicket, /authoritative statement of scope/);
+});
+
+const TICKET = "RAD-85351 — [a11y] Accessible names for all video-player controls. ".repeat(4);
+
+test("validateTicket rejects anything that is not a real transcription", () => {
+  assert.deepEqual(validateTicket({ fetched: true, markdown: TICKET }, "RAD-85351"), { ok: true, markdown: TICKET.trim() });
+  // Agent admitted failure.
+  assert.equal(validateTicket({ fetched: false, markdown: TICKET, error: "no tools" }, "RAD-85351").ok, false);
+  // Too short to be a real ticket body.
+  assert.equal(validateTicket({ fetched: true, markdown: "RAD-85351 accessible names" }, "RAD-85351").ok, false);
+  // Long enough, but not actually this ticket.
+  assert.equal(validateTicket({ fetched: true, markdown: "x".repeat(400) }, "RAD-85351").ok, false);
+  assert.equal(validateTicket(null, "RAD-85351").ok, false);
+});
+
+test("parseArgs validates --jira-tool", () => {
+  assert.equal(parseArgs(["RAD-1", "--repo", "/r"]).jiraTool, null);
+  assert.equal(
+    parseArgs(["RAD-1", "--repo", "/r", "--jira-tool", "mcp__foo__getJiraIssue"]).jiraTool,
+    "mcp__foo__getJiraIssue",
+  );
+  assert.throws(() => parseArgs(["RAD-1", "--repo", "/r", "--jira-tool", "atlassian"]), /full MCP tool name/);
 });

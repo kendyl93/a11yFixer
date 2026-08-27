@@ -8,11 +8,12 @@ installed or built in it yet.
 
 This is the ORIENTATION step. Do not implement anything yet.
 
+{{JIRA_ACCESS}}
+
 ## Do this now
 
-1. Fetch the exact Jira subtask using the Jira MCP server configured in this environment. If
-   Jira/Atlassian MCP tools are not in your tool list, use `ToolSearch` to load them
-   (search for "jira issue atlassian"). Understand precisely what is in scope.
+1. Read the Jira ticket file described above, in full. That is what is in scope. If anything is
+   ambiguous you may also query Jira directly with the tool loaded above.
 2. Discover and read the repository's own instructions for how engineering work is done here.
    Do not assume which files exist — look. Candidates worth checking include `AGENTS.md` (root
    and nested, especially near the code you will touch), `CLAUDE.md`, `CONTRIBUTING.md`,

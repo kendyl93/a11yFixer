@@ -4,7 +4,7 @@ import path from "node:path";
 import { commandExists } from "./proc.js";
 import * as git from "./git.js";
 import { checkGh, defaultBranch } from "./github.js";
-import { discoverSubtasks, isAlreadyDone, parseJiraKey } from "./discovery.js";
+import { discoverSubtasks, isAlreadyDone, parseJiraKey, DEFAULT_JIRA_TOOL } from "./discovery.js";
 import { runSubtask } from "./worker.js";
 import { printSummary } from "./report.js";
 import { spin, stopSpinner, formatDuration } from "./spinner.js";
@@ -17,6 +17,7 @@ export type Args = {
   model: string | null;
   dryRun: boolean;
   allowMissingToken: boolean;
+  jiraTool: string | null;
 };
 
 export function parseArgs(argv: string[]): Args {
@@ -25,6 +26,7 @@ export function parseArgs(argv: string[]): Args {
   let model: string | null = null;
   let dryRun = false;
   let allowMissingToken = false;
+  let jiraTool: string | null = null;
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] as string;
@@ -32,6 +34,7 @@ export function parseArgs(argv: string[]): Args {
     else if (a === "--model") model = argv[++i] ?? null;
     else if (a === "--dry-run") dryRun = true;
     else if (a === "--allow-missing-token") allowMissingToken = true;
+    else if (a === "--jira-tool") jiraTool = argv[++i] ?? "";
     else if (a.startsWith("--")) throw new Error(`unknown flag: ${a}`);
     else if (!parentUrl) parentUrl = a;
     else throw new Error(`unexpected argument: ${a}`);
@@ -41,7 +44,11 @@ export function parseArgs(argv: string[]): Args {
   if (!parseJiraKey(parentUrl)) throw new Error(`could not parse a Jira issue key from: ${parentUrl}`);
   if (!repo) throw new Error("missing --repo <path to target repository>");
 
-  return { parentUrl, repo, model, dryRun, allowMissingToken };
+  if (jiraTool !== null && !/^mcp__\w+__\w+$/.test(jiraTool)) {
+    throw new Error(`--jira-tool must be a full MCP tool name, e.g. ${DEFAULT_JIRA_TOOL}`);
+  }
+
+  return { parentUrl, repo, model, dryRun, allowMissingToken, jiraTool };
 }
 
 function expandHome(p: string): string {
@@ -105,6 +112,7 @@ async function main(): Promise<void> {
       parentKey,
       cwd: repo,
       model: args.model,
+      jiraTool: args.jiraTool ?? DEFAULT_JIRA_TOOL,
     });
   } catch (err) {
     spDiscover.stop("❌", `Discovery failed for ${parentKey}`);
@@ -112,6 +120,8 @@ async function main(): Promise<void> {
   }
   spDiscover.stop("🔍", `Discovered direct subtasks of ${parentKey} via Jira MCP`);
   console.log(`      └ ${formatUsage(discovery.usage)}`);
+  const jiraTool = args.jiraTool ?? discovery.jiraTool;
+  console.log(`      Jira tool: ${jiraTool}`);
 
   console.log("");
   console.log(`📋  Parent: ${discovery.parent.key}  ${discovery.parent.summary}`);
@@ -134,6 +144,7 @@ async function main(): Promise<void> {
     runDir,
     model: args.model,
     dryRun: args.dryRun,
+    jiraTool,
   };
 
   const outcomes: Outcome[] = [];

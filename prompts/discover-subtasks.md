@@ -4,12 +4,11 @@ session ends.
 Parent Jira issue: {{PARENT_URL}}
 Expected parent key: {{PARENT_KEY}}
 
+{{JIRA_ACCESS}}
+
 ## Your job
 
-1. Fetch that exact Jira issue using the Jira MCP server that is configured in this Claude Code
-   environment. If Jira/Atlassian MCP tools are not visible in your tool list, use `ToolSearch`
-   to load them (search for terms like "jira issue atlassian"). Do not give up before trying
-   `ToolSearch`.
+1. Fetch that exact Jira issue using the Jira MCP tool loaded above.
 2. Read the parent's SUBTASK field — its direct child sub-tasks, and nothing else.
 3. For each direct subtask, record its key, browse URL, summary and status.
 
@@ -27,7 +26,11 @@ Expected parent key: {{PARENT_KEY}}
 
 Return the structured object you are asked for.
 
-- `jiraMcpAvailable`: false only if no Jira MCP tool could be reached at all.
+- `jiraMcpAvailable`: false only if no Jira MCP tool could be reached at all, AND you tried the
+  exact select query above.
+- `jiraToolName`: the exact name of the Jira tool you actually used, e.g.
+  `mcp__claude_ai_Atlassian__getJiraIssue`. Later agents reuse this name to load Jira
+  deterministically, so report it precisely.
 - `error`: a short string when discovery failed, otherwise null.
 - `parent`: the exact parent you fetched.
 - `subtasks`: the direct sub-tasks, in Jira's order. An empty array is a valid answer.

@@ -3,7 +3,7 @@ import path from "node:path";
 import { renderPrompt, runClaude, READ_ONLY_TOOLS, EDIT_NO_SHELL_TOOLS } from "./claude.js";
 import { execShell } from "./proc.js";
 import * as git from "./git.js";
-import { claimSubtask, describeClaim } from "./discovery.js";
+import { claimSubtask, describeClaim, fetchSubtaskTicket, jiraAccessBlock } from "./discovery.js";
 import { createDraftPr } from "./github.js";
 import { spin, stopSpinner, formatDuration } from "./spinner.js";
 import { addUsage, emptyUsage, formatUsage, formatUsageTotal, type Usage } from "./usage.js";
@@ -134,6 +134,29 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   detail(worktree);
   await git.addDetachedWorktree(ctx.repoPath, worktree, ctx.baseSha);
 
+  // --- Jira ticket, fetched once and verified before any agent reasons about scope ----------
+  const ticketPath = path.join(artifacts, `${subtask.key}.jira.md`);
+  const spTicket = spin("📖", `fetching ${subtask.key} from Jira…`);
+  const { result: ticket, usage: ticketUsage } = await fetchSubtaskTicket({
+    subtask,
+    cwd: worktree,
+    model: ctx.model,
+    jiraTool: ctx.jiraTool,
+  });
+  if (!ticket.ok) {
+    spTicket.stop("❌", `could not read ${subtask.key} from Jira`);
+    usage = addUsage(usage, ticketUsage);
+    return fail(
+      `Jira unavailable: ${ticket.error}. Refusing to implement a ticket that was never read.`,
+      null,
+    );
+  }
+  await writeFile(ticketPath, ticket.markdown);
+  spTicket.stop("📖", `${subtask.key} fetched from Jira — ${ticket.markdown.length} chars`);
+  detail(ticketPath);
+  account(ticketUsage);
+  const jiraAccess = jiraAccessBlock(ctx.jiraTool, ticketPath);
+
   // --- Step B: bootstrap (implementation context A begins) ------------------
   const spBootstrap = spin("🧭", "bootstrap — reading repository instructions…");
   const bootstrapPrompt = await renderPrompt("bootstrap.md", {
@@ -141,11 +164,13 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     SUBTASK_KEY: subtask.key,
     BASE_SHA: ctx.baseSha,
     BASE_BRANCH: ctx.baseBranch,
+    JIRA_ACCESS: jiraAccess,
   });
   const bootstrap = await runClaude({
     prompt: bootstrapPrompt,
     cwd: worktree,
     disallowedTools: EDIT_NO_SHELL_TOOLS,
+    addDirs: [artifacts],
     jsonSchema: BOOTSTRAP_SCHEMA,
     model: ctx.model,
   });
@@ -187,7 +212,12 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   // --- Claim the Jira subtask, immediately before any code is written -------
   const spClaim = spin("📌", "Jira — assigning to you and moving to In Progress…");
   try {
-    const { claim, usage: claimUsage } = await claimSubtask({ subtask, cwd: worktree, model: ctx.model });
+    const { claim, usage: claimUsage } = await claimSubtask({
+      subtask,
+      cwd: worktree,
+      model: ctx.model,
+      jiraAccess,
+    });
     const ok = claim.assigned && claim.transitioned;
     spClaim.stop(ok ? "📌" : "⚠️ ", `Jira — ${describeClaim(claim)}`);
     if (claim.note) detail(claim.note);
@@ -267,6 +297,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     DIFF_PATH: diffPath,
     CHANGED_FILES: files.join("\n"),
     VERIFICATION_RESULTS: formatResults(results),
+    JIRA_ACCESS: jiraAccess,
   });
   const reviewRes = await runClaude({
     prompt: reviewPrompt,
@@ -299,6 +330,7 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
         ? `The independent reviewer returned MANUAL_REVIEW_REQUIRED with this explanation:\n${explanation}\n` +
           `Surface this to human reviewers in whatever way the repository's PR conventions allow.`
         : "The independent reviewer returned PASS. No extra reviewer note is required.",
+    JIRA_ACCESS: jiraAccess,
   });
   const prMeta = await runClaude({
     prompt: prPrompt,

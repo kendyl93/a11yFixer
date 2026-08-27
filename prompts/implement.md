@@ -1,6 +1,9 @@
 The branch `{{BRANCH_NAME}}` has been created for you in this worktree. You may now implement
 Jira subtask {{SUBTASK_KEY}}.
 
+Re-read the Jira ticket file you were given before you start, and implement against what it
+actually says — every acceptance criterion in it, and nothing outside it.
+
 ## How to work
 
 - Work ONLY on this Jira subtask.

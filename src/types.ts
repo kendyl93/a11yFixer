@@ -50,4 +50,5 @@ export type RunContext = {
   runDir: string;
   model: string | null;
   dryRun: boolean;
+  jiraTool: string;
 };
