@@ -1,249 +1,204 @@
-# a11yFixer
+# ship-tickets
 
-## What it does
+Discovery is yours. Implementation is the agent's.
+
+You decide what should be built and write it down. ship-tickets picks up the subtasks you marked,
+runs **your `implement` skill** against each one in an isolated agent, and opens a Draft PR.
+
+## The contract
+
+For each Jira subtask you want built:
+
+1. Grill it — `/grilling`, or however you like to think it through.
+2. Paste the conclusion into the subtask as a **comment**, under a `## Handoff` heading.
+3. Label the subtask **`ready-for-implementation`**.
+
+That comment is the spec. Not the description, not the summary, not the agent's own plan. An
+unlabelled subtask is ignored; a labelled one with no `## Handoff` comment fails immediately
+rather than guessing:
+
+```
+❌  RAD-85351 failed after 38s
+   handoff unusable: no `## Handoff` heading in the returned text.
+```
+
+## Pipeline
 
 ```
 parent Jira issue
-  └─ direct subtasks only (linked issues are context, never scope)
-       └─ for each subtask, sequentially:
-            fresh git worktree pinned to BASE_SHA
-            fresh Claude session  ── bootstrap: read repo instructions → branch name + verify commands
-            branch created by the harness
-            fresh Claude session  ── claim Jira: assign to you + move to In Progress
-            implementation session ── implement
-            harness               ── run the repository's verification commands
-            same session          ── one repair attempt if they failed, then re-verify
-            NEW Claude session    ── independent review: PASS / FAIL / MANUAL_REVIEW_REQUIRED
-            NEW Claude session    ── commit message + PR title + PR body from repo conventions
-            harness               ── git add / git commit / git push / gh pr create --draft
+  └─ direct subtasks labelled `ready-for-implementation`, minus any already in flight
+       ├─ fresh claude session ── fetch each `## Handoff` comment verbatim → file
+       ├─ fresh claude session ── plan the order, and what stacks on what
+       └─ then for each, in that order:
+            harness              ── git worktree from its base (BASE_SHA, or what it stacks on)
+            fresh claude session ── branch name from repo conventions
+            harness              ── create branch
+            fresh claude session ── claim Jira: assign to you + In Progress
+            fresh claude session ── YOUR implement skill (/tdd, typecheck, /code-review, commit)
+            fresh claude session ── PR title + body from repo conventions
+            harness              ── git push + gh pr create --draft
 ```
 
-Every subtask branches from the same frozen `BASE_SHA`, so the PRs are independent:
+Every box is a **separate `claude -p` process** with an empty context. Nothing is inherited; the
+only things crossing a boundary are files on disk. The agent writing your code has never seen
+Jira's tool output, the parent epic, another subtask, or the branch-naming discussion — it reads
+one document, the one you wrote.
+
+## Order and stacking
+
+Handoffs are fetched and validated **before** anything is claimed or built, because the order
+depends on what they say. A planning session then reads them and returns the sequence, plus what
+each subtask must be built on top of — the handoff's own words if it names a dependency, otherwise
+whatever creates a shared primitive before the work that consumes it.
+
+Independent subtasks branch from the frozen `BASE_SHA` and their PRs target the base branch. A
+subtask that depends on another starts from **that branch's head**, and its PR targets that branch:
 
 ```
 BASE_SHA
- ├── RAD-1001
- ├── RAD-1002
- └── RAD-1003
+ ├── a11y/RAD-1001   PR #1 → main
+ │    └── a11y/RAD-1002   PR #2 → a11y/RAD-1001    (contains RAD-1001's code)
+ └── a11y/RAD-1003   PR #3 → main
 ```
 
-## What it does NOT do
+So dependent work genuinely builds on earlier work, and each PR still shows only its own diff —
+`git diff` is taken from that subtask's own base, not from `BASE_SHA`. The cost is a forced merge
+order: merge #1 before #2. If a subtask fails, everything stacked on it is skipped as *stranded*
+rather than quietly rebuilt from the base branch without the dependency it was planned to have.
 
-- no merging, ever
-- no Jira mutation beyond claiming a subtask — see below. No comments, no resolving, no field
-  edits, and nothing at all is ever moved to Done
-- no giant combined PR — one subtask, one branch, one Draft PR
-- no shared Claude context between subtasks
-- no concurrency in v0 (subtasks run sequentially)
-- no general bug workflow yet — this v0 is accessibility-shaped
-- no hardcoded branch/commit/PR/test conventions: the target repository is the authority
+The harness owns this: a dependency the planner points at a subtask that has not been built yet,
+at itself, or at nothing is dropped, and a subtask the planner forgets is still built, unstacked.
 
-## Jira access is verified, never assumed
+## Which subtasks are skipped
 
-Claude Code defers MCP tools when many servers are configured. With ~350 tools available, an
-agent that runs a *semantic* `ToolSearch` ("jira atlassian issue") can get nothing back and
-conclude Jira is unavailable — then carry on and implement from the issue key alone. That failure
-is silent and it makes every downstream result untrustworthy.
+- not labelled `ready-for-implementation`
+- labelled, but the status says someone is already on it — In Progress, In Development, Code
+  Review, In Review, In Verification, QA, Testing, Done, Closed, Resolved, Cancelled. Only
+  not-started work is a candidate; an unrecognised status is treated as available.
+- labelled and available, but carrying no `## Handoff` comment — that one is a **failure**, not a
+  skip
+- stranded behind a subtask that failed
 
-Two defences:
+## What it uses to implement
 
-1. **Exact tool loading.** Every Jira-touching prompt is given the tool's full name and told to
-   load it with an exact select query, which is deterministic:
+Nothing of its own. At the moment the implementation phase starts, ship-tickets reads your skill file
+and pastes its body into the prompt:
 
-   ```
-   ToolSearch({ query: "select:mcp__claude_ai_Atlassian__getJiraIssue" })
-   ```
+```
+Implement Jira subtask RAD-1001 by following this process, taken verbatim from the
+`implement` skill at /Users/you/.claude/skills/implement/SKILL.md:
 
-   The discovery agent reports the tool name it actually used, and that name is threaded into
-   every later agent. Override with `--jira-tool <mcp__server__tool>` if your server is named
-   differently.
+<process>
+Implement the work described by the user in the spec or tickets.
+Use /tdd where possible, at pre-agreed seams.
+Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+Once done, use /code-review to review the work.
+Commit your work to the current branch.
+</process>
 
-2. **Fetch once, verify, then work from the file.** Before a worktree does anything else, a small
-   dedicated session transcribes the subtask verbatim to
-   `artifacts/<KEY>.jira.md`. The harness checks the result is a real ticket — the agent claimed
-   success, the text is long enough, and it mentions the issue key. It retries once. **If it still
-   fails, the subtask fails right there**, before a branch is created or a line of code is
-   written:
+The work is specified by the handoff at /tmp/…/RAD-1001.handoff.md — …
+```
 
-   ```
-   ❌  RAD-85351 failed after 41s
-      Jira unavailable: agent reported it could not reach Jira. Refusing to implement a
-      ticket that was never read.
-   ```
+Three consequences worth knowing:
 
-   Bootstrap, implement, review and PR-prep all read that file. They can still query Jira for
-   extra detail, but none of them can silently proceed on a guess.
-
-3. **Write tools are named explicitly, and the whole connection is proved before anything else.**
-   `select:` resolves exact names only — keyword searches like `+atlassian` return nothing here —
-   so the harness builds the whole query from the discovered prefix rather than letting an agent
-   guess:
-
-   ```
-   select:mcp__claude_ai_Atlassian__atlassianUserInfo,…__editJiraIssue,
-          …__getTransitionsForJiraIssue,…__transitionJiraIssue,…__lookupJiraAccountId
-   ```
-
-   **This is the very first thing every run does**, `--dry-run` included, before a worktree exists
-   or a subtask is discovered:
-
-   ```
-   🔑  Jira connection OK   31s
-      read   ✔  mcp__claude_ai_Atlassian__getJiraIssue
-             RAD-85350 — Deque Audit: Apply video player accessibility fixes across package
-      write  ✔  Paweł Stanecki
-             transitions: In Planning, Ready To Start, In Progress, Code Review, …, Done
-   ```
-
-   Neither tick is a self-report. `read` passes only if the parent issue's summary actually came
-   back — which also proves the issue exists and you can see it. `write` passes only if
-   `atlassianUserInfo` actually returned an account id, and that account is then handed to every
-   claim agent so none of them re-derive it.
-
-   **A failed read check aborts the run immediately**, with the tools that did not resolve and
-   what to try next. A failed write check warns and continues unclaimed — missing write access is
-   not a reason to skip the engineering work.
-
-## The one Jira write
-
-Immediately before an implementation agent writes its first line of code, a small dedicated
-Claude session claims the subtask:
-
-- assigns it to the Atlassian account your Jira MCP is authenticated as, and
-- transitions it to whatever this project's workflow calls its in-progress state.
-
-That is the entire scope of the write. It touches only that subtask, never the parent and never a
-linked issue. It does not run in `--dry-run`, it does not run for skipped subtasks, and it never
-runs for a subtask that fails before implementation starts. If the claim fails, it is reported as
-a warning and the implementation continues — a Jira workflow hiccup should not block engineering
-work. The step is prompt-scoped (`prompts/claim-jira.md`), so a subtask that never reaches Step D
-is left exactly as it was found.
-
-## The core principle
-
-**The harness knows the process. The repository knows the policy. The agent interprets the
-repository policy.**
-
-a11yFixer deliberately knows almost nothing about how your repository expects work to be done.
-The bootstrap agent discovers `AGENTS.md` (root and nested), `CLAUDE.md`, `CONTRIBUTING.md`,
-READMEs, testing/accessibility/architecture docs and `.github` templates itself, and returns the
-branch name and verification commands *from what it found*. If your repository documents no
-deterministic verification, the agent returns an empty list and the reviewer is told verification
-was unavailable — the harness does not invent `npm test`.
+- **The agent never looks a skill up.** It is handed the text, so there is no name to guess at and
+  no lookup to resolve wrongly. Edit the skill, and the next run builds the new way — the text is
+  read at runtime, never copied into this repository.
+- **No skill, no run.** If no `SKILL.md` resolves, ship-tickets refuses to start, before any worktree,
+  branch or Jira write. A second check catches it disappearing mid-run.
+  ```
+  ❌  ship-tickets: the `implement` skill is not installed.
+    ship-tickets does not implement anything itself — it runs that skill.
+    Install it from https://github.com/mattpocock/skills, or drop a SKILL.md at
+    ~/.claude/skills/implement/SKILL.md
+  ```
+- **`/tdd` and `/code-review` are model-invocable skills**, so the agent reaches them from that
+  text exactly as it would in your own session. They must be installed too.
 
 ## Requirements
 
-- Node.js 20+
-- git
-- Claude Code CLI (`claude`) on your PATH
-- A Claude subscription and `CLAUDE_CODE_OAUTH_TOKEN`
-- Jira MCP (Atlassian) configured in your Claude Code environment
-- GitHub CLI (`gh`), authenticated
-- A target repository whose agent/contributor instructions are actually useful
-
-## Setup
-
-```sh
-cd ~/Desktop/a11yFixer
-npm install
-
-claude setup-token
-export CLAUDE_CODE_OAUTH_TOKEN="..."   # secret: never commit, log or paste it anywhere
-
-gh auth status
-```
-
-`CLAUDE_CODE_OAUTH_TOKEN` is a secret. a11yFixer never reads, prints or writes it; it is simply
-inherited by the `claude` child processes.
+- Node.js 20+, git, `gh` (authenticated)
+- Claude Code CLI on PATH, plus `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`)
+- The `implement`, `tdd` and `code-review` skills — [mattpocock/skills](https://github.com/mattpocock/skills)
+- Jira MCP (Atlassian) connected in Claude Code
+- A target repository whose `AGENTS.md` is actually useful — every prompt defers to it for branch,
+  commit, PR, testing and accessibility conventions
 
 ## Run
 
 ```sh
-npm run a11y-fixer -- \
-  https://user-testing.atlassian.net/browse/RAD-85350 \
-  --repo ~/path/to/target-repository
+npm install
+npm run ship-tickets -- https://you.atlassian.net/browse/RAD-85350 --repo ~/path/to/repo --dry-run
 ```
-
-Flags:
 
 | flag | meaning |
 | --- | --- |
 | `--repo <path>` | target repository (required) |
-| `--model <alias>` | model for every Claude session, e.g. `opus` |
-| `--dry-run` | stop each subtask after the branch is created — no implementation, no push, no PR |
-| `--allow-missing-token` | skip the `CLAUDE_CODE_OAUTH_TOKEN` check when the machine is already authenticated interactively |
-| `--jira-tool <name>` | full MCP tool name for reading Jira; defaults to what discovery reports |
+| `--label <name>` | ready label; default `ready-for-implementation` |
+| `--model <alias>` | model for every session, e.g. `opus` |
+| `--dry-run` | validate handoffs and name branches, then stop — no code, no Jira writes, no PR |
+| `--allow-missing-token` | skip the token check when the machine is already authenticated |
+| `--jira-tool <name>` | full MCP tool name for reading Jira, if your server is named differently |
 
-Start with `--dry-run`. It runs the Jira connection check, discovery, the per-subtask ticket
-fetch, worktree creation, the bootstrap agent and branch naming — without writing any code,
-changing any Jira issue, or touching GitHub. If Jira is misconfigured you find out in about
-30 seconds rather than 30 minutes.
+Start with `--dry-run`: it proves Jira works, shows which subtasks your labels actually selected,
+and validates every handoff — in about a minute.
 
-## Terminal output
+## Paths
 
-Long steps (Jira discovery, bootstrap, implementation, verification, review, push, PR creation)
-show a spinner with a live elapsed timer, so a step that takes ten minutes never looks hung. When
-output is piped or redirected the spinner is skipped and each step prints one plain line instead,
-so logs stay readable. `Ctrl-C` restores the cursor.
-
-## Cost and context reporting
-
-Every Claude session reports what it used, read straight from the CLI's JSON response — the
-harness estimates nothing:
+**Skill resolution** — `findSkill()` mirrors the claude CLI, first match wins:
 
 ```
-   🧭  bootstrap — reading repository instructions…   1m02s
-      └ opus-5  ·  ctx 8% of 1M  ·  ↓ 58.6K  ↑ 1.1K  ·  $0.24
+~/.claude/skills/<name>/SKILL.md
+<target repo>/.claude/skills/<name>/SKILL.md
+~/.claude/plugins/*/*/*/*/skills/<name>/SKILL.md
 ```
 
-with a rollup per subtask and for the whole run:
+**Prompts** — `prompts/*.md` are templates, not prompts. `renderPrompt()` (`src/claude.ts:91`)
+substitutes `{{VARS}}`, and the caller supplies them from real data:
 
+```ts
+// src/worker.ts:107
+const branchPrompt = await renderPrompt("branch-name.md", {
+  SUBTASK_KEY: subtask.key,          // "RAD-1001", from the Jira survey
+  SUBTASK_SUMMARY: subtask.summary,
+});
+
+// src/worker.ts:166
+const implementPrompt = await renderPrompt("implement.md", {
+  IMPLEMENT_SKILL: await readSkillBody(skillPath),  // the skill file's text
+  SKILL_PATH: skillPath,                            // where it was read from
+  HANDOFF_PATH: handoffPath, BRANCH_NAME: branchName, …
+});
 ```
-⏱   Wall clock: 2h14m
-📊  opus-5   ·   61 Claude sessions   ·   ↓ 8.2M  ↑ 683.2K   ·   $57.34 at list price
-    peak context in a single session: 34% of 1M   ·   cache reads 128.1M
-```
 
-Three things to read carefully:
+The agent never sees `{{…}}`. Prompts total ~500 words: they say what the job is and defer to
+`AGENTS.md` for how. Anything the repository already documents was deleted.
 
-- **`ctx N%`** is the largest single turn's prompt divided by the model's context window — the
-  fullest that session's context ever got. Isolated per subtask, this is the number that tells you
-  whether "one context ≈ one engineering task" is actually holding.
-- **`↓`** counts fresh tokens only (new input plus cache writes). Cache reads are reported
-  separately because summing them across turns counts the same tokens over and over.
-- **`$` is list price, not your bill.** On a Claude subscription these calls are covered by your
-  plan. Treat the figure as a relative measure of how expensive a subtask was.
+**Run output** — `$TMPDIR/ship-tickets/<repo>-<PARENT>-<timestamp>/<JIRA-KEY>/`:
 
-## Where things end up
+| file | what it answers |
+| --- | --- |
+| `artifacts/<KEY>.handoff.md` | what the agent was told to build |
+| `artifacts/branch-name.json` | the branch convention it found, and where |
+| `artifacts/implement-prompt.md` | the exact prompt it got, skill text included |
+| `artifacts/diff.patch` | what it produced |
+| `artifacts/*.json` | raw response from each session, with token and cost data |
+| `worktree/` | the isolated checkout and branch |
 
-Each run creates `$TMPDIR/a11y-fixer/<repo>-<PARENT>-<timestamp>/<JIRA-KEY>/`:
+Worktrees are never deleted, including on failure. Clean up with `git -C <repo> worktree prune`.
 
-- `worktree/` — the isolated checkout and branch
-- `artifacts/` — `<KEY>.jira.md` (the verbatim ticket every agent worked from), `diff.patch`,
-  `verification.txt`, and the raw JSON from each Claude session
+## Limits
 
-`<KEY>.jira.md` is the file to open when a PR looks wrong: it is exactly what the agents were
-told the task was.
-
-Worktrees are **never** deleted, including on failure. Clean up with
-`git -C <repo> worktree prune` after removing the directories.
-
-## Known v0 limitations
-
-- Agents run with `--permission-mode bypassPermissions` and built-in `Bash` denied (the harness
-  owns command execution). MCP tools are *not* restricted, so "only the claim agent may write to
-  Jira" is enforced by prompt instruction, not by permissions.
-- The claim agent picks the in-progress transition by meaning, not by exact name. On an unusual
-  workflow it may pick the wrong one, or none — check the `📌`/`⚠️` line in the output.
-- Worktrees are clean checkouts with no installed dependencies. If verification needs an install
-  step, the bootstrap agent is instructed to return it as the first verification command.
-- Exactly one repair attempt. No loops.
-- `--tools ""` is deliberately not used to sandbox agents: it removes `ToolSearch`, which is how
-  deferred MCP tools (including Jira) get loaded, and silently breaks Jira access.
-- Deferred MCP tool schemas cost roughly 50K input tokens in every session, which is most of the
-  floor cost of a subtask. `--strict-mcp-config` with a hand-declared Atlassian server would fix
-  that, but a hand-declared server needs its own OAuth and cannot reuse the claude.ai connector's
-  credentials, so v0 does not do it.
-- The write-tool name list is specific to the Atlassian MCP server's vocabulary. A different Jira
-  MCP server would need that list adjusting; the prefix is discovered, the tool names are not.
-- Missing write access is reported and non-fatal, unlike the read path which is fatal.
+- The implementation phase gets a shell and no denied tools, because your skill runs its own
+  tests and `/code-review`. It is confined to a throwaway worktree and told not to push, open a PR
+  or touch Jira — a prompt instruction, not a permission. Every other phase has `Bash`, `Edit`,
+  `Write` and `NotebookEdit` denied outright.
+- No harness-run verification and no separate reviewer: your skill self-reviews, and the draft PR
+  is the human gate.
+- Jira MCP tools are deferred in Claude Code, and a *semantic* tool search silently returns
+  nothing — so every Jira prompt is handed an exact `select:` query instead. The tool name the
+  first agent actually used is threaded into all the others.
+- One Jira write, ever: assign + move to In Progress, on the subtask being implemented. Never on
+  the parent, never to Done. Failure there is a warning, not a stop.
+- Subtasks run sequentially, and stacked ones must be merged in order. Nothing is ever merged
+  by ship-tickets.

@@ -1,34 +1,23 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { renderPrompt, runClaude, READ_ONLY_TOOLS, EDIT_NO_SHELL_TOOLS } from "./claude.js";
-import { execShell } from "./proc.js";
+import {
+  renderPrompt, runClaude, findSkill, readSkillBody,
+  IMPLEMENT_SKILL, IMPLEMENT_TIMEOUT_MS, READ_ONLY_TOOLS,
+} from "./claude.js";
 import * as git from "./git.js";
-import { claimSubtask, describeClaim, fetchSubtaskTicket, jiraAccessBlock } from "./discovery.js";
+import { claimSubtask, describeClaim } from "./jira.js";
 import { createDraftPr } from "./github.js";
 import { spin, stopSpinner, formatDuration } from "./spinner.js";
 import { addUsage, emptyUsage, formatUsage, formatUsageTotal, type Usage } from "./usage.js";
-import type { CommandResult, Outcome, RunContext, Subtask, Verdict } from "./types.js";
+import type { Base, Outcome, RunContext, Subtask } from "./types.js";
 
-const VERIFY_TIMEOUT_MS = 30 * 60 * 1000;
-const MAX_OUTPUT_PER_COMMAND = 20_000;
-
-const BOOTSTRAP_SCHEMA = {
+const BRANCH_SCHEMA = {
   type: "object",
   properties: {
     branchName: { type: "string" },
-    verificationCommands: { type: "array", items: { type: "string" } },
     notes: { type: "string" },
   },
-  required: ["branchName", "verificationCommands"],
-} as const;
-
-const REVIEW_SCHEMA = {
-  type: "object",
-  properties: {
-    verdict: { type: "string", enum: ["PASS", "FAIL", "MANUAL_REVIEW_REQUIRED"] },
-    explanation: { type: "string" },
-  },
-  required: ["verdict", "explanation"],
+  required: ["branchName"],
 } as const;
 
 const PR_SCHEMA = {
@@ -41,68 +30,31 @@ const PR_SCHEMA = {
   required: ["commitMessage", "prTitle", "prBody"],
 } as const;
 
-export function parseVerdict(structured: unknown): { verdict: Verdict; explanation: string } {
-  const d = (structured ?? {}) as Record<string, unknown>;
-  const raw = String(d["verdict"] ?? "").trim().toUpperCase();
-  const verdict: Verdict =
-    raw === "PASS" || raw === "FAIL" || raw === "MANUAL_REVIEW_REQUIRED" ? raw : "MANUAL_REVIEW_REQUIRED";
-  const explanation = typeof d["explanation"] === "string" ? d["explanation"].trim() : "";
-  return { verdict, explanation: explanation || "(reviewer gave no explanation)" };
-}
-
-export function verdictIcon(verdict: Verdict): string {
-  if (verdict === "PASS") return "✅";
-  if (verdict === "FAIL") return "❌";
-  return "👀";
-}
-
-function clip(text: string, max = MAX_OUTPUT_PER_COMMAND): string {
-  return text.length <= max ? text : `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]`;
-}
-
-/** Full failure detail for the repair agent. */
-export function formatFailures(results: CommandResult[]): string {
-  return results
-    .filter((r) => r.exitCode !== 0)
-    .map(
-      (r) =>
-        `### command: ${r.command}\nexit code: ${r.exitCode}${r.timedOut ? " (timed out)" : ""}\n` +
-        `--- stdout ---\n${clip(r.stdout).trim() || "(empty)"}\n` +
-        `--- stderr ---\n${clip(r.stderr).trim() || "(empty)"}`,
-    )
-    .join("\n\n");
-}
-
-function formatResults(results: CommandResult[]): string {
-  if (results.length === 0) return "Deterministic verification: UNAVAILABLE (repository documented no discoverable commands).";
-  return results.map((r) => `${r.exitCode === 0 ? "PASS" : "FAIL"} (exit ${r.exitCode}): ${r.command}`).join("\n");
-}
-
 const say = (line = ""): void => console.log(line);
 const step = (icon: string, text: string): void => console.log(`   ${icon}  ${text}`);
 const detail = (text: string): void => console.log(`      ${text}`);
 
-async function runVerification(commands: string[], cwd: string): Promise<CommandResult[]> {
-  const results: CommandResult[] = [];
-  for (const command of commands) {
-    const sp = spin("   ⋯", command);
-    const r = await execShell(command, cwd, VERIFY_TIMEOUT_MS);
-    results.push({ command, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut });
-    sp.stop(r.exitCode === 0 ? "   ✓" : "   ✗");
-    if (r.exitCode !== 0) {
-      const tail = (r.stderr.trim() || r.stdout.trim()).split("\n").slice(-12).join("\n");
-      if (tail) console.log(tail.replace(/^/gm, "         │ "));
-    }
-  }
-  return results;
-}
-
 /**
- * One Jira subtask = one isolated workflow.
- * Implementation context (A), review context (B) and PR-prep context (C) are separate
- * Claude sessions, and none of them outlive this function.
+ * One ready subtask = one isolated workflow.
+ *
+ * Every phase below is a SEPARATE `claude` process with its own fresh context, and none of them
+ * outlives this function:
+ *
+ *   branch name (repo, read-only) -> claim (Jira only) -> implement (worktree, full tools)
+ *   -> PR text (read-only)
+ *
+ * No phase ever inherits another's context. The only things that cross a phase boundary are
+ * files on disk: the handoff document and the diff.
+ *
+ * `base` is what this subtask is built on — the run's base branch, or the branch of the subtask
+ * it was planned to stack on.
  */
-export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Outcome> {
+export async function runSubtask(
+  ctx: RunContext,
+  subtask: Subtask,
+  handoffPath: string,
+  base: Base,
+): Promise<Outcome> {
   const dir = path.join(ctx.runDir, subtask.key);
   const worktree = path.join(dir, "worktree");
   const artifacts = path.join(dir, "artifacts");
@@ -120,96 +72,59 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
   say(`    ${subtask.url}`);
   say("━".repeat(72));
 
-  const fail = (reason: string, branch: string | null, verdict?: Verdict): Outcome => {
+  const fail = (reason: string, branch: string | null): Outcome => {
     stopSpinner();
     step("❌", `${subtask.key} failed after ${formatDuration(Date.now() - started)}`);
     detail(reason.split("\n")[0] ?? reason);
     detail(`worktree preserved: ${worktree}`);
     detail(`└ ${formatUsageTotal(usage, "subtask")}`);
-    return { kind: "failed", subtask, reason, branch, worktree, verdict, usage };
+    return { kind: "failed", subtask, reason, branch, worktree, usage };
   };
 
-  // --- Step A: detached worktree pinned to BASE_SHA -------------------------
-  step("🌱", `worktree from ${ctx.baseSha.slice(0, 10)}`);
+  // --- Step A: worktree, pinned to whatever this subtask builds on ---------
+  step("🌱", base.dependsOn ? `worktree from ${base.branch} (stacked on ${base.dependsOn})` : `worktree from ${base.sha.slice(0, 10)}`);
   detail(worktree);
-  await git.addDetachedWorktree(ctx.repoPath, worktree, ctx.baseSha);
+  await git.addDetachedWorktree(ctx.repoPath, worktree, base.sha);
+  detail(`handoff: ${handoffPath}`);
 
-  // --- Jira ticket, fetched once and verified before any agent reasons about scope ----------
-  const ticketPath = path.join(artifacts, `${subtask.key}.jira.md`);
-  const spTicket = spin("📖", `fetching ${subtask.key} from Jira…`);
-  const { result: ticket, usage: ticketUsage } = await fetchSubtaskTicket({
-    subtask,
-    cwd: worktree,
-    model: ctx.model,
-    jiraTool: ctx.jiraTool,
-  });
-  if (!ticket.ok) {
-    spTicket.stop("❌", `could not read ${subtask.key} from Jira`);
-    usage = addUsage(usage, ticketUsage);
-    return fail(
-      `Jira unavailable: ${ticket.error}. Refusing to implement a ticket that was never read.`,
-      null,
-    );
-  }
-  await writeFile(ticketPath, ticket.markdown);
-  spTicket.stop("📖", `${subtask.key} fetched from Jira — ${ticket.markdown.length} chars`);
-  detail(ticketPath);
-  account(ticketUsage);
-  const jiraAccess = jiraAccessBlock(ctx.jiraTool, ticketPath);
-
-  // --- Step B: bootstrap (implementation context A begins) ------------------
-  const spBootstrap = spin("🧭", "bootstrap — reading repository instructions…");
-  const bootstrapPrompt = await renderPrompt("bootstrap.md", {
-    SUBTASK_URL: subtask.url,
+  // --- Step B: branch name from repository conventions (its own context) ----
+  const spBranch = spin("🧭", "reading repository branch conventions…");
+  const branchPrompt = await renderPrompt("branch-name.md", {
     SUBTASK_KEY: subtask.key,
-    BASE_SHA: ctx.baseSha,
-    BASE_BRANCH: ctx.baseBranch,
-    JIRA_ACCESS: jiraAccess,
+    SUBTASK_SUMMARY: subtask.summary,
   });
-  const bootstrap = await runClaude({
-    prompt: bootstrapPrompt,
+  const branchRes = await runClaude({
+    prompt: branchPrompt,
     cwd: worktree,
-    disallowedTools: EDIT_NO_SHELL_TOOLS,
+    disallowedTools: READ_ONLY_TOOLS,
     addDirs: [artifacts],
-    jsonSchema: BOOTSTRAP_SCHEMA,
+    jsonSchema: BRANCH_SCHEMA,
     model: ctx.model,
   });
-  spBootstrap.stop();
-  account(bootstrap.usage);
-  await writeFile(path.join(artifacts, "bootstrap.json"), bootstrap.raw);
+  spBranch.stop();
+  account(branchRes.usage);
+  await writeFile(path.join(artifacts, "branch-name.json"), branchRes.raw);
 
-  const implSession = bootstrap.sessionId;
-  const b = (bootstrap.structured ?? {}) as Record<string, unknown>;
+  const b = (branchRes.structured ?? {}) as Record<string, unknown>;
   const branchName = typeof b["branchName"] === "string" ? b["branchName"].trim() : "";
-  const verificationCommands = Array.isArray(b["verificationCommands"])
-    ? (b["verificationCommands"] as unknown[]).filter((c): c is string => typeof c === "string" && c.trim() !== "")
-    : [];
-
-  if (!branchName) return fail("bootstrap agent returned no branch name", null);
+  if (!branchName) return fail("branch-name agent returned no branch name", null);
   if (!(await git.isValidBranchName(ctx.repoPath, branchName))) {
-    return fail(`bootstrap agent returned an invalid git branch name: ${branchName}`, null);
+    return fail(`branch-name agent returned an invalid git branch name: ${branchName}`, null);
   }
   if (await git.branchExists(ctx.repoPath, branchName)) {
     return fail(`branch already exists in the target repository: ${branchName}`, branchName);
   }
-
-  detail(`branch:       ${branchName}`);
-  detail(
-    verificationCommands.length
-      ? `verification: ${verificationCommands.length} command(s) from repository conventions`
-      : "verification: none discoverable in repository documentation",
-  );
-  for (const c of verificationCommands) detail(`              · ${c}`);
+  detail(`branch: ${branchName}`);
 
   // --- Step C: create the branch (harness owns the side effect) -------------
   await git.createBranch(worktree, branchName);
 
   if (ctx.dryRun) {
     step("🛑", "--dry-run: stopping before implementation (Jira untouched)");
-    return { kind: "skipped", subtask, reason: `dry run — branch ${branchName} created, no code written`, usage };
+    return { kind: "skipped", subtask, reason: `dry run — handoff OK, branch ${branchName} not implemented`, usage };
   }
 
-  // --- Claim the Jira subtask, immediately before any code is written -------
+  // --- Step D: claim the Jira subtask (its own context, never fatal) --------
   const spClaim = spin("📌", "Jira — assigning to you and moving to In Progress…");
   try {
     const { claim, usage: claimUsage } = await claimSubtask({
@@ -217,7 +132,6 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
       cwd: worktree,
       model: ctx.model,
       jiraTool: ctx.jiraTool,
-      account: ctx.jiraAccount,
     });
     const ok = claim.assigned && claim.transitioned;
     spClaim.stop(ok ? "📌" : "⚠️ ", `Jira — ${describeClaim(claim)}`);
@@ -228,110 +142,56 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     spClaim.stop("⚠️ ", `Jira — could not assign/transition: ${(err as Error).message.split("\n")[0]}`);
   }
 
-  // --- Step D: implement (same context A) ----------------------------------
-  const spImpl = spin("🛠️ ", "implementing…");
+  // --- Step E: implement, in a context that has seen nothing but the handoff ---
+  // The skill is read here, not at startup, so the text that runs is the text on disk right now.
+  const skillPath = await findSkill(IMPLEMENT_SKILL, ctx.repoPath);
+  if (!skillPath) return fail(`the \`${IMPLEMENT_SKILL}\` skill is no longer installed`, branchName);
+  const spImpl = spin("🛠️ ", `${IMPLEMENT_SKILL} — tests, typecheck, self-review, commit…`);
   const implStarted = Date.now();
   const implementPrompt = await renderPrompt("implement.md", {
+    IMPLEMENT_SKILL: await readSkillBody(skillPath),
+    IMPLEMENT_SKILL_NAME: IMPLEMENT_SKILL,
+    SKILL_PATH: skillPath,
     SUBTASK_KEY: subtask.key,
+    SUBTASK_URL: subtask.url,
     BRANCH_NAME: branchName,
+    BASE_SHA: base.sha,
+    HANDOFF_PATH: handoffPath,
   });
   const impl = await runClaude({
     prompt: implementPrompt,
     cwd: worktree,
-    resume: implSession,
-    disallowedTools: EDIT_NO_SHELL_TOOLS,
+    // The implementer owns its own tests, typecheck, review and commit, so it needs a shell.
+    // It is confined to a throwaway worktree and cannot push or open a PR.
+    addDirs: [artifacts],
     model: ctx.model,
+    timeoutMs: IMPLEMENT_TIMEOUT_MS,
   });
-  spImpl.stop();
+  spImpl.stop("🛠️ ", `${IMPLEMENT_SKILL} finished in ${formatDuration(Date.now() - implStarted)}`);
+  detail(`skill: ${skillPath}`);
   account(impl.usage);
   await writeFile(path.join(artifacts, "implement.json"), impl.raw);
+  // Exactly what the implementer was told, skill text included.
+  await writeFile(path.join(artifacts, "implement-prompt.md"), implementPrompt);
 
   await git.stageAll(worktree);
-  let files = await git.changedFiles(worktree, ctx.baseSha);
-  if (files.length === 0) return fail("implementation produced no changes", branchName);
-  detail(`${files.length} file(s) changed   (${formatDuration(Date.now() - implStarted)})`);
+  const files = await git.changedFiles(worktree, base.sha);
+  if (files.length === 0) return fail(`${IMPLEMENT_SKILL} produced no changes`, branchName);
+  const commits = await git.commitsSince(worktree, base.sha);
+  detail(`${files.length} file(s) changed · ${commits} commit(s) by the implementer`);
 
-  // --- Step E: deterministic verification (harness owns execution) ----------
-  if (verificationCommands.length) step("🧪", "verification");
-  else step("🧪", "verification unavailable — no commands documented");
-  let results = await runVerification(verificationCommands, worktree);
-
-  // --- Step F: exactly one repair attempt ----------------------------------
-  if (results.some((r) => r.exitCode !== 0)) {
-    const spRepair = spin("🔁", "repair attempt (1 of 1)…");
-    const repairPrompt = await renderPrompt("repair.md", {
-      SUBTASK_KEY: subtask.key,
-      FAILURES: formatFailures(results),
-    });
-    const repair = await runClaude({
-      prompt: repairPrompt,
-      cwd: worktree,
-      resume: implSession,
-      disallowedTools: EDIT_NO_SHELL_TOOLS,
-      model: ctx.model,
-    });
-    spRepair.stop("🔁", "repair attempt (1 of 1)");
-    account(repair.usage);
-    await writeFile(path.join(artifacts, "repair.json"), repair.raw);
-
-    await git.stageAll(worktree);
-    files = await git.changedFiles(worktree, ctx.baseSha);
-    results = await runVerification(verificationCommands, worktree);
-    if (results.some((r) => r.exitCode !== 0)) {
-      return fail("deterministic verification failed after one repair attempt", branchName);
-    }
-  }
-  // Implementation context A is now dead. Nothing below reuses implSession.
-
-  // --- Step G: independent review (fresh context B) -------------------------
-  const diff = await git.diffFromBase(worktree, ctx.baseSha);
+  const diff = await git.diffFromBase(worktree, base.sha);
   const diffPath = path.join(artifacts, "diff.patch");
   await writeFile(diffPath, diff);
-  await writeFile(path.join(artifacts, "verification.txt"), formatResults(results));
 
-  const spReview = spin("🔎", "independent review (fresh context)…");
-  const reviewPrompt = await renderPrompt("review.md", {
-    SUBTASK_URL: subtask.url,
-    SUBTASK_KEY: subtask.key,
-    BASE_SHA: ctx.baseSha,
-    BRANCH_NAME: branchName,
-    DIFF_PATH: diffPath,
-    CHANGED_FILES: files.join("\n"),
-    VERIFICATION_RESULTS: formatResults(results),
-    JIRA_ACCESS: jiraAccess,
-  });
-  const reviewRes = await runClaude({
-    prompt: reviewPrompt,
-    cwd: worktree,
-    disallowedTools: READ_ONLY_TOOLS,
-    addDirs: [artifacts],
-    jsonSchema: REVIEW_SCHEMA,
-    model: ctx.model,
-  });
-  spReview.stop("🔎", "independent review (fresh context)");
-  account(reviewRes.usage);
-  await writeFile(path.join(artifacts, "review.json"), reviewRes.raw);
-  const { verdict, explanation } = parseVerdict(reviewRes.structured);
-  detail(`${verdictIcon(verdict)} ${verdict}`);
-  detail(explanation.split("\n")[0] ?? "");
-
-  // --- Step H ---------------------------------------------------------------
-  if (verdict === "FAIL") return fail(`reviewer FAIL: ${explanation}`, branchName, verdict);
-
-  // --- Step I: PR metadata from repository conventions (fresh context C) ----
-  const spPr = spin("📝", "preparing commit & PR metadata from repository conventions…");
+  // --- Step F: PR text from repository conventions (fresh context) ----------
+  const spPr = spin("📝", "preparing PR text from repository conventions…");
   const prPrompt = await renderPrompt("prepare-pr.md", {
     SUBTASK_URL: subtask.url,
     SUBTASK_KEY: subtask.key,
     BRANCH_NAME: branchName,
     DIFF_PATH: diffPath,
-    CHANGED_FILES: files.join("\n"),
-    MANUAL_REVIEW_NOTE:
-      verdict === "MANUAL_REVIEW_REQUIRED"
-        ? `The independent reviewer returned MANUAL_REVIEW_REQUIRED with this explanation:\n${explanation}\n` +
-          `Surface this to human reviewers in whatever way the repository's PR conventions allow.`
-        : "The independent reviewer returned PASS. No extra reviewer note is required.",
-    JIRA_ACCESS: jiraAccess,
+    HANDOFF_PATH: handoffPath,
   });
   const prMeta = await runClaude({
     prompt: prPrompt,
@@ -341,39 +201,38 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
     jsonSchema: PR_SCHEMA,
     model: ctx.model,
   });
-  spPr.stop("📝", "commit & PR metadata prepared from repository conventions");
+  spPr.stop("📝", "PR text prepared from repository conventions");
   account(prMeta.usage);
   await writeFile(path.join(artifacts, "prepare-pr.json"), prMeta.raw);
   const m = (prMeta.structured ?? {}) as Record<string, unknown>;
   const commitMessage = typeof m["commitMessage"] === "string" ? m["commitMessage"].trim() : "";
   const prTitle = typeof m["prTitle"] === "string" ? m["prTitle"].trim() : "";
   const prBody = typeof m["prBody"] === "string" ? m["prBody"] : "";
-  if (!commitMessage || !prTitle) return fail("PR metadata agent returned incomplete output", branchName, verdict);
+  if (!commitMessage || !prTitle) return fail("PR text agent returned incomplete output", branchName);
 
-  // --- Step J: commit (harness owns the side effect) ------------------------
-  await git.stageAll(worktree);
+  // --- Step G: sweep up anything /implement left uncommitted ----------------
   if (await git.hasStagedChanges(worktree)) {
     const msgPath = path.join(artifacts, "commit-message.txt");
     await writeFile(msgPath, `${commitMessage}\n`);
     try {
       await git.commit(worktree, msgPath);
+      detail("committed leftover uncommitted changes");
     } catch (err) {
-      return fail(`commit failed: ${(err as Error).message}`, branchName, verdict);
+      return fail(`commit failed: ${(err as Error).message}`, branchName);
     }
   }
 
-  // --- Step K: push (only this branch, never forced) ------------------------
-  let remote: string;
+  // --- Step H: push (only this branch, never forced) ------------------------
   try {
-    remote = await git.defaultRemote(ctx.repoPath);
+    const remote = await git.defaultRemote(ctx.repoPath);
     const spPush = spin("⬆️ ", `pushing ${branchName} → ${remote}…`);
     await git.pushBranch(worktree, remote, branchName);
     spPush.stop("⬆️ ", `pushed ${branchName} → ${remote}`);
   } catch (err) {
-    return fail(`push failed: ${(err as Error).message}`, branchName, verdict);
+    return fail(`push failed: ${(err as Error).message}`, branchName);
   }
 
-  // --- Step L: Draft PR -----------------------------------------------------
+  // --- Step I: Draft PR -----------------------------------------------------
   try {
     const bodyPath = path.join(artifacts, "pr-body.md");
     await writeFile(bodyPath, prBody);
@@ -383,13 +242,13 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise<Out
       title: prTitle,
       bodyFile: bodyPath,
       head: branchName,
-      base: ctx.baseBranch,
+      base: base.branch,
     });
     spDraft.stop("🎉", `Draft PR created — ${subtask.key} done in ${formatDuration(Date.now() - started)}`);
-    detail(prUrl);
+    detail(`${prUrl}  →  ${base.branch}`);
     detail(`└ ${formatUsageTotal(usage, "subtask")}`);
-    return { kind: "pr", subtask, verdict, prUrl, branch: branchName, worktree, usage };
+    return { kind: "pr", subtask, base, prUrl, branch: branchName, worktree, usage };
   } catch (err) {
-    return fail((err as Error).message, branchName, verdict);
+    return fail((err as Error).message, branchName);
   }
 }

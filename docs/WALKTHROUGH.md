@@ -1,9 +1,13 @@
 # Execution walkthrough
 
+> **Stale as of the label-gated refactor.** This document describes the earlier pipeline
+> (agent-led discovery, harness-run verification, independent reviewer). The current
+> design is in [README.md](../README.md). Regenerate this before presenting it again.
+
 What actually happens, in order, from pressing Enter. Line numbers are real.
 
 ```
-npm run a11y-fixer -- https://…/browse/RAD-85350 --repo ~/results/frontends/microfrontends
+npm run ship-tickets -- https://…/browse/RAD-85350 --repo ~/results/frontends/microfrontends
 ```
 
 ---
@@ -69,7 +73,7 @@ const baseBranch = await git.currentBranch(repo)   // git rev-parse --abbrev-ref
 which is what keeps the PRs independent.
 
 ### 1.4 Create the run directory — `cli.ts:103`
-`$TMPDIR/a11y-fixer/<repo>-<PARENT>-<iso-timestamp>/`
+`$TMPDIR/ship-tickets/<repo>-<PARENT>-<iso-timestamp>/`
 
 ---
 

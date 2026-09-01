@@ -1,5 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 import { exec } from "./proc.js";
 import { parseUsage, type Usage } from "./usage.js";
@@ -8,9 +9,60 @@ const PROMPTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** Tool policy per role. Built-in tools only; MCP tools stay reachable via ToolSearch. */
+/**
+ * The skill that does the engineering. `prompts/implement.md` invokes it as a slash command, so
+ * this name is resolved by the claude CLI against the installed skills — install it from
+ * https://github.com/mattpocock/skills and ship-tickets builds things the way that skill says.
+ */
+export const IMPLEMENT_SKILL = "implement";
+
+/**
+ * Locate the skill file whose text the implementation phase runs.
+ *
+ * Resolution mirrors the claude CLI: user skills, then the target repo's own, then plugins.
+ * The run refuses to start when this returns null, because an implementation phase with no
+ * process to follow would still look like a successful session.
+ */
+export async function findSkill(name: string, repo: string): Promise<string | null> {
+  const home = os.homedir();
+  const direct = [
+    path.join(home, ".claude", "skills", name, "SKILL.md"),
+    path.join(repo, ".claude", "skills", name, "SKILL.md"),
+  ];
+  for (const candidate of direct) {
+    if (await stat(candidate).catch(() => null)) return candidate;
+  }
+  // Plugin-provided skills live under the plugin cache, one tree per marketplace and version.
+  const found = await exec(
+    "/bin/sh",
+    ["-c", `ls -d "$HOME"/.claude/plugins/*/*/*/*/skills/${name}/SKILL.md 2>/dev/null | head -1`],
+    { timeoutMs: 10_000 },
+  );
+  return found.stdout.trim() || null;
+}
+
+/**
+ * The skill's instructions, frontmatter stripped.
+ *
+ * The body is inlined verbatim into the implementation prompt rather than invoked as
+ * `/implement`, so what the agent runs is exactly the skill on disk at that moment — visible in
+ * the run's artifacts, and impossible to silently downgrade to an ordinary prompt.
+ */
+export async function readSkillBody(skillPath: string): Promise<string> {
+  const raw = await readFile(skillPath, "utf8");
+  const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+  return body.trim();
+}
+
+/** /implement runs tests, a typecheck and a self-review, so it needs a much longer leash. */
+export const IMPLEMENT_TIMEOUT_MS = 90 * 60 * 1000;
+
+/**
+ * Denied to every phase except /implement. Built-in tools only; MCP tools stay reachable via
+ * ToolSearch. A phase that only reads Jira, reads the repo or writes PR text has no business
+ * running a shell or editing a file, and saying so is cheaper than hoping.
+ */
 export const READ_ONLY_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit"];
-export const EDIT_NO_SHELL_TOOLS = ["Bash", "NotebookEdit"];
 
 export type ClaudeCall = {
   /** Fully rendered prompt text. */

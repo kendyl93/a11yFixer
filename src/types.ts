@@ -3,17 +3,8 @@ export type Subtask = {
   url: string;
   summary: string;
   status: string | null;
+  labels: string[];
 };
-
-export type CommandResult = {
-  command: string;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-};
-
-export type Verdict = "PASS" | "FAIL" | "MANUAL_REVIEW_REQUIRED";
 
 import type { Usage } from "./usage.js";
 
@@ -21,7 +12,7 @@ export type Outcome =
   | {
       kind: "pr";
       subtask: Subtask;
-      verdict: Verdict;
+      base: Base;
       prUrl: string;
       branch: string;
       worktree: string;
@@ -33,7 +24,6 @@ export type Outcome =
       reason: string;
       branch: string | null;
       worktree: string | null;
-      verdict?: Verdict;
       usage?: Usage;
     }
   | {
@@ -43,6 +33,14 @@ export type Outcome =
       usage?: Usage;
     };
 
+/** What one subtask's worktree and pull request are built on: BASE_SHA, or the subtask it stacks on. */
+export type Base = {
+  sha: string;
+  branch: string;
+  /** The subtask key this stacks on, or null when it starts from the run's base branch. */
+  dependsOn: string | null;
+};
+
 export type RunContext = {
   repoPath: string;
   baseSha: string;
@@ -51,5 +49,4 @@ export type RunContext = {
   model: string | null;
   dryRun: boolean;
   jiraTool: string;
-  jiraAccount: { id: string; name: string | null } | null;
 };

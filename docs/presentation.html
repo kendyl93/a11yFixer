@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>a11yFixer — code walkthrough</title>
+<title>ship-tickets — code walkthrough</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2333; --line:#30363d;
@@ -80,7 +80,7 @@
 <!-- ============ PART 1 — THE SHAPE ============ -->
 
 <section class="slide" data-notes="Ninety seconds on this. One sentence, then move. He does not need the backstory.">
-  <p class="kicker">a11yFixer</p>
+  <p class="kicker">ship-tickets</p>
   <h1>One Jira parent in.<br>Twelve draft PRs out.</h1>
   <p class="lead">A ~2,000-line Node/TypeScript harness with zero runtime dependencies. It shells out to
   the <span style="font-family:var(--mono);color:var(--blue)">claude</span> CLI, <span style="font-family:var(--mono);color:var(--blue)">git</span> and
@@ -221,7 +221,7 @@ export const EDIT_NO_SHELL_TOOLS =
   <p class="kicker"><span class="part">part 2</span> · entry</p>
   <h2>npm → tsx → cli.ts</h2>
   <div class="filebar">package.json</div>
-  <pre class="code">"a11y-fixer": "tsx src/cli.ts"</pre>
+  <pre class="code">"ship-tickets": "tsx src/cli.ts"</pre>
   <div style="margin-top:1.2rem"></div>
   <div class="filebar">src/cli.ts <span class="ln">230</span></div>
   <pre class="code">const invokedDirectly =
@@ -230,7 +230,7 @@ export const EDIT_NO_SHELL_TOOLS =
 if (invokedDirectly) {
   main().catch((err: Error) =&gt; {
     stopSpinner();
-    console.error(`\n❌  a11yFixer: ${err.message}`);
+    console.error(`\n❌  ship-tickets: ${err.message}`);
     process.exit(1);
   });
 }</pre>
@@ -471,7 +471,7 @@ await git.createBranch(worktree, branchName);        // git switch -c
 const impl = await runClaude({ prompt: implementPrompt, cwd: worktree,
                                resume: implSession,  // ← SAME context
                                disallowedTools: EDIT_NO_SHELL_TOOLS });</pre>
-  <div class="why">a11yFixer never invents a branch name or a test command — it asks the agent, which reads the
+  <div class="why">ship-tickets never invents a branch name or a test command — it asks the agent, which reads the
   repo's <span style="font-family:var(--mono)">AGENTS.md</span>. The harness only validates it with
   <span style="font-family:var(--mono)">git check-ref-format</span>.</div>
 </section>
@@ -529,7 +529,7 @@ const prUrl = await createDraftPr({ …, head: branchName, base: ctx.baseBranch 
     <li><span style="font-family:var(--mono);color:var(--blue)">prompts/*.md</span> — nine markdown files; roughly half the project's behaviour lives here, not in TypeScript</li>
     <li><span style="font-family:var(--mono);color:var(--blue)">docs/WALKTHROUGH.md</span> — this deck as text, with every underlying git/gh command</li>
   </ul>
-  <p class="lead" style="margin-top:1.8rem;font-family:var(--mono);font-size:1rem">github.com/kendyl93/a11yFixer</p>
+  <p class="lead" style="margin-top:1.8rem;font-family:var(--mono);font-size:1rem">github.com/kendyl93/ship-tickets</p>
 </section>
 
 </div>
