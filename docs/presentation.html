@@ -3,507 +3,592 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>a11yFixer — how it works</title>
+<title>a11yFixer — code walkthrough</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2333; --line:#30363d;
     --text:#e6edf3; --dim:#9aa7b4; --faint:#6e7d8d;
-    --green:#3fb950; --amber:#e3b341; --red:#f85149; --blue:#58a6ff; --purple:#bc8cff; --pink:#f778ba;
+    --green:#7ee787; --amber:#e3b341; --red:#ff7b72; --blue:#79c0ff; --purple:#d2a8ff; --cyan:#56d4dd;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hidden}
-
   .deck{height:100vh;display:flex;flex-direction:column}
   .stage{flex:1;position:relative;overflow:hidden}
-  .slide{position:absolute;inset:0;padding:3.2rem 4.5rem 2rem;overflow-y:auto;
-    opacity:0;visibility:hidden;transform:translateY(14px);
-    transition:opacity .28s ease,transform .28s ease,visibility .28s}
-  .slide.on{opacity:1;visibility:visible;transform:none}
+  .slide{position:absolute;inset:0;padding:2.4rem 3.6rem 1.6rem;overflow-y:auto;
+    opacity:0;visibility:hidden;transition:opacity .2s ease,visibility .2s}
+  .slide.on{opacity:1;visibility:visible}
   @media (prefers-reduced-motion:reduce){.slide{transition:none}}
 
-  h1{font-size:3.4rem;line-height:1.05;margin:0 0 1rem;letter-spacing:-.02em}
-  h2{font-size:2.1rem;line-height:1.15;margin:0 0 .35rem;letter-spacing:-.015em}
-  .kicker{font-family:var(--mono);font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;
-    color:var(--faint);margin:0 0 1.6rem}
-  .lead{font-size:1.35rem;line-height:1.55;color:var(--dim);max-width:60ch;margin:0 0 1.6rem}
-  .big{font-size:1.75rem;line-height:1.45;max-width:52ch}
-  p{line-height:1.6}
-  strong{color:#fff;font-weight:650}
-  .g{color:var(--green)} .a{color:var(--amber)} .r{color:var(--red)}
-  .b{color:var(--blue)} .p{color:var(--purple)} .k{color:var(--pink)}
+  h1{font-size:3rem;margin:0 0 .8rem;letter-spacing:-.02em}
+  h2{font-size:1.85rem;margin:0 0 .5rem;letter-spacing:-.015em;line-height:1.2}
+  .kicker{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--faint);margin:0 0 1rem}
+  .part{color:var(--purple)}
+  .lead{font-size:1.15rem;line-height:1.6;color:var(--dim);max-width:78ch;margin:0 0 1rem}
+  .big{font-size:1.5rem;line-height:1.45;max-width:54ch;margin:0 0 1rem}
+  strong{color:#fff;font-weight:640}
+  .why{border-left:3px solid var(--blue);background:rgba(121,192,255,.07);padding:.75rem 1.1rem;
+    border-radius:0 7px 7px 0;font-size:1.06rem;line-height:1.55;max-width:88ch;margin:1rem 0 0}
+  .why::before{content:"why";display:block;font-family:var(--mono);font-size:.64rem;
+    letter-spacing:.16em;text-transform:uppercase;color:var(--blue);margin-bottom:.3rem}
 
-  /* terminal */
-  .term{background:#010409;border:1px solid var(--line);border-radius:10px;
-    font-family:var(--mono);font-size:.95rem;line-height:1.75;padding:1.1rem 1.3rem;
-    white-space:pre-wrap;overflow-x:auto;margin:0 0 1.1rem}
-  .term .c{color:var(--faint)}
-  .bar{display:flex;gap:6px;padding:.55rem .8rem;background:#161b22;border:1px solid var(--line);
-    border-bottom:0;border-radius:10px 10px 0 0}
-  .bar+.term{border-radius:0 0 10px 10px}
-  .dot{width:11px;height:11px;border-radius:50%;background:#3a4553}
-  .d1{background:#ff5f57}.d2{background:#febc2e}.d3{background:#28c840}
+  .filebar{display:inline-flex;align-items:center;gap:.5rem;font-family:var(--mono);font-size:.78rem;
+    background:var(--panel2);border:1px solid var(--line);border-bottom:0;color:var(--blue);
+    padding:.35rem .8rem;border-radius:8px 8px 0 0}
+  .filebar .ln{color:var(--faint)}
+  pre.code{background:#010409;border:1px solid var(--line);border-radius:0 8px 8px 8px;
+    font-family:var(--mono);font-size:.94rem;line-height:1.65;padding:1rem 1.2rem;margin:0;
+    overflow-x:auto;white-space:pre}
+  pre.code.sm{font-size:.84rem;line-height:1.6}
+  .cm{color:#7d8791;font-style:italic} .st{color:var(--cyan)} .kw{color:var(--purple)}
+  .fn{color:var(--blue)} .nm{color:var(--green)}
 
-  /* narration bubble */
-  .say{border-left:3px solid var(--purple);background:rgba(188,140,255,.07);
-    padding:.85rem 1.2rem;border-radius:0 8px 8px 0;font-size:1.12rem;line-height:1.6;
-    max-width:74ch;margin:0 0 1rem}
-  .say::before{content:"say this";display:block;font-family:var(--mono);font-size:.68rem;
-    letter-spacing:.14em;text-transform:uppercase;color:var(--purple);margin-bottom:.4rem}
+  .split{display:grid;grid-template-columns:1.25fr .85fr;gap:2rem;align-items:start}
+  .stack>*+*{margin-top:1rem}
+  .note{font-family:var(--mono);font-size:.82rem;color:var(--faint);margin:.5rem 0 0}
+  .chain{font-family:var(--mono);font-size:.95rem;line-height:1.9;color:var(--dim);
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:1rem 1.2rem;white-space:pre}
+  .chain b{color:var(--blue);font-weight:500}
+  .chain i{color:var(--green);font-style:normal}
+  ul.pts{list-style:none;padding:0;margin:0;max-width:76ch}
+  ul.pts li{position:relative;padding:.4rem 0 .4rem 1.5rem;font-size:1.1rem;line-height:1.5;color:var(--dim)}
+  ul.pts li::before{content:"▸";position:absolute;left:0;color:var(--blue)}
 
-  .cols{display:grid;grid-template-columns:1fr 1fr;gap:2.2rem;align-items:start}
-  .cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.4rem}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.1rem 1.25rem}
-  .card h3{margin:.1rem 0 .5rem;font-size:1.05rem}
-  .card p{margin:0;color:var(--dim);font-size:.98rem;line-height:1.55}
-  .tag{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
-
-  ol.steps{counter-reset:s;list-style:none;padding:0;margin:0;max-width:66ch}
-  ol.steps li{counter-increment:s;position:relative;padding:.55rem 0 .55rem 3rem;
-    font-size:1.18rem;line-height:1.5;border-bottom:1px solid rgba(48,54,61,.6)}
-  ol.steps li:last-child{border-bottom:0}
-  ol.steps li::before{content:counter(s);position:absolute;left:0;top:.5rem;
-    width:1.9rem;height:1.9rem;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
-    color:var(--blue);font-family:var(--mono);font-size:.85rem;display:grid;place-items:center}
-
-  .files{width:100%;border-collapse:collapse;font-size:1rem}
-  .files td{padding:.5rem .6rem;border-bottom:1px solid rgba(48,54,61,.7);vertical-align:top}
-  .files td:first-child{font-family:var(--mono);color:var(--blue);white-space:nowrap;width:15rem}
-  .files td:last-child{color:var(--dim)}
-  .files tr.hi td:first-child{color:var(--green)}
-
-  svg{max-width:100%;height:auto}
-  .cap{font-family:var(--mono);font-size:.78rem;color:var(--faint);margin-top:.6rem}
-
-  /* chrome */
-  .chrome{display:flex;align-items:center;gap:1rem;padding:.7rem 1.6rem;border-top:1px solid var(--line);
-    background:var(--panel);font-family:var(--mono);font-size:.78rem;color:var(--faint)}
+  .chrome{display:flex;align-items:center;gap:1rem;padding:.6rem 1.4rem;border-top:1px solid var(--line);
+    background:var(--panel);font-family:var(--mono);font-size:.76rem;color:var(--faint)}
   .prog{flex:1;height:3px;background:#21262d;border-radius:2px;overflow:hidden}
-  .prog i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--purple));width:0;
-    transition:width .28s ease}
-  .chrome button{background:var(--panel2);color:var(--text);border:1px solid var(--line);
-    border-radius:6px;padding:.3rem .7rem;font-family:var(--mono);font-size:.78rem;cursor:pointer}
+  .prog i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--purple));width:0;transition:width .2s}
+  .chrome button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;
+    padding:.28rem .65rem;font-family:var(--mono);font-size:.76rem;cursor:pointer}
   .chrome button:hover{border-color:var(--blue)}
-  .chrome button:focus-visible,.slide a:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  .chrome button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
   kbd{background:#21262d;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
-    padding:.05rem .35rem;font-family:var(--mono);font-size:.72rem;color:var(--dim)}
-
-  .notes{position:fixed;left:0;right:0;bottom:2.6rem;background:#111a26;border-top:2px solid var(--blue);
-    padding:1rem 4.5rem;font-size:1.02rem;line-height:1.55;color:#cfe3ff;display:none;max-height:38vh;overflow:auto}
+    padding:.05rem .32rem;font-family:var(--mono);font-size:.7rem;color:var(--dim)}
+  .notes{position:fixed;left:0;right:0;bottom:2.4rem;background:#111a26;border-top:2px solid var(--blue);
+    padding:.9rem 3.6rem;font-size:1rem;line-height:1.5;color:#cfe3ff;display:none;max-height:36vh;overflow:auto}
   .notes.on{display:block}
-  .notes b{color:#fff}
+  svg{max-width:100%;height:auto}
 </style>
 </head>
 <body>
 <div class="deck">
-  <div class="stage" id="stage">
+<div class="stage" id="stage">
 
-  <!-- 1 -->
-  <section class="slide" data-notes="Set the frame: this is an experiment, not a product. One question — is this workflow worth investing in? Keep it light.">
-    <p class="kicker">experimental v0</p>
-    <h1>a11y<span class="b">Fixer</span></h1>
-    <p class="lead">One Jira ticket with 12 subtasks in.<br>12 small, independent, reviewable draft pull requests out.</p>
-    <p style="font-family:var(--mono);color:var(--faint);font-size:.95rem">~2,000 lines · Node + TypeScript · no dependencies · built in an afternoon</p>
-  </section>
+<!-- ============ PART 1 — THE SHAPE ============ -->
 
-  <!-- 2 -->
-  <section class="slide" data-notes="This is the problem slide. Everyone who has used an AI agent for a long task recognises it. Don't rush this — if they feel this pain, the rest lands.">
-    <p class="kicker">the problem</p>
-    <h2>One big agent, twelve tickets</h2>
-    <p class="lead">What everybody tries first.</p>
-    <div class="cols">
-      <div>
-        <div class="term"><span class="c">ticket 1</span>  ✅ good
-<span class="c">ticket 2</span>  ✅ good
-<span class="c">ticket 3</span>  🙂 ok
-<span class="c">ticket 4</span>  😐 hmm
-<span class="c">ticket 5</span>  <span class="a">😵 confused</span>
-<span class="c">ticket 6</span>  <span class="r">💀 nonsense</span></div>
-      </div>
-      <div>
-        <p class="big">Its memory fills up. Decisions from&nbsp;ticket&nbsp;2 leak into ticket&nbsp;7.</p>
-        <p class="lead">And at the end you get <strong>one enormous pull request</strong> touching everything, that nobody wants to review.</p>
-      </div>
-    </div>
-  </section>
+<section class="slide" data-notes="Ninety seconds on this. One sentence, then move. He does not need the backstory.">
+  <p class="kicker">a11yFixer</p>
+  <h1>One Jira parent in.<br>Twelve draft PRs out.</h1>
+  <p class="lead">A ~2,000-line Node/TypeScript harness with zero runtime dependencies. It shells out to
+  the <span style="font-family:var(--mono);color:var(--blue)">claude</span> CLI, <span style="font-family:var(--mono);color:var(--blue)">git</span> and
+  <span style="font-family:var(--mono);color:var(--blue)">gh</span>. That's the whole stack.</p>
+  <div class="chain">parent Jira issue
+  → direct subtasks
+    → <i>per subtask:</i> worktree · fetch ticket · bootstrap · implement · verify · review · draft PR</div>
+  <p class="note">part 1 — how it works &nbsp;·&nbsp; part 2 — the code, in execution order</p>
+</section>
 
-  <!-- 3 -->
-  <section class="slide" data-notes="THE analogy. If they remember one thing, make it this. Say it slowly, in your own words. Seven beats — you don't need them verbatim.">
-    <p class="kicker">the idea</p>
-    <h2>A foreman who hires a new contractor for every job</h2>
-    <p class="lead">The foreman is deliberately ignorant. He doesn't know how to do the work, and he doesn't know the house rules.</p>
-    <ol class="steps">
-      <li>Builds a <strong>brand new empty workshop</strong> — a clean copy of the codebase</li>
-      <li>Hires a contractor, who <strong>first reads the house rulebook</strong> lying in the workshop</li>
-      <li>Contractor does <strong>that one job only</strong>, then goes home</li>
-      <li>The foreman <strong>runs the inspection himself</strong> — he never asks "did it go well?"</li>
-      <li>A <strong>second inspector who never met the contractor</strong> sees only the finished work</li>
-      <li>If it passes, he <strong>files paperwork as a draft</strong> for a human to sign</li>
-      <li>Then he <strong>burns the notes</strong>. Next job, new contractor, remembers nothing</li>
-    </ol>
-  </section>
-
-  <!-- 4 -->
-  <section class="slide" data-notes="Show your actual terminal here if you can. One command, two arguments. That's the whole interface.">
-    <p class="kicker">the interface</p>
-    <h2>You type one line</h2>
-    <div class="bar"><span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span></div>
-    <div class="term">npm run a11y-fixer -- \
-    <span class="b">https://user-testing.atlassian.net/browse/RAD-85350</span> \
-    --repo <span class="g">~/results/frontends/microfrontends</span></div>
-    <div class="say">A parent Jira ticket, and the repo to work in. That's it. Everything else it figures out for itself.</div>
-  </section>
-
-  <!-- 5 -->
-  <section class="slide" data-notes="This slide exists because of a real bug. Emphasise: 30 seconds, not 30 minutes. It PROVES the connection instead of assuming it.">
-    <p class="kicker">step 0 · before anything else</p>
-    <h2>Prove it can talk to Jira</h2>
-    <div class="term"><span class="b">🔑</span>  Jira connection OK   <span class="c">31s</span>
-   read   <span class="g">✔</span>  mcp__claude_ai_Atlassian__getJiraIssue
-          RAD-85350 — Deque Audit: Apply video player accessibility fixes
-   write  <span class="g">✔</span>  Paweł Stanecki
-          transitions: In Planning, Ready To Start, <span class="a">In Progress</span>, … Done</div>
-    <div class="say">Thirty seconds to prove I can read Jira <em>and</em> write to Jira. If my setup is broken I find out now — not after half an hour of work.</div>
-    <p class="lead" style="font-size:1.1rem">The tick only appears if the ticket's title <strong>actually came back</strong>. An agent saying "yes I'm connected" is not accepted.</p>
-  </section>
-
-  <!-- 6 -->
-  <section class="slide" data-notes="The linked-vs-subtask distinction is a scope-control decision. Linked tickets are a trap — they'd make the work explode.">
-    <p class="kicker">step 1 · discovery</p>
-    <h2>Ask Jira what the jobs actually are</h2>
-    <div class="cols">
-      <div>
-        <svg viewBox="0 0 340 260" role="img" aria-label="Parent ticket with 12 subtasks included and linked issues excluded">
-          <rect x="90" y="8" width="160" height="40" rx="8" fill="#1c2333" stroke="#58a6ff"/>
-          <text x="170" y="33" fill="#58a6ff" font-family="monospace" font-size="14" text-anchor="middle">RAD-85350</text>
-          <path d="M170 48 L170 70 M60 70 L280 70" stroke="#30363d" fill="none"/>
-          <g font-family="monospace" font-size="12" fill="#3fb950">
-            <path d="M60 70 L60 92 M120 70 L120 92 M180 70 L180 92 M240 70 L240 92 M280 70 L280 92" stroke="#30363d"/>
-            <rect x="30" y="92" width="60" height="26" rx="5" fill="#12261a" stroke="#3fb950"/><text x="60" y="109" text-anchor="middle">85351</text>
-            <rect x="95" y="92" width="60" height="26" rx="5" fill="#12261a" stroke="#3fb950"/><text x="125" y="109" text-anchor="middle">85352</text>
-            <rect x="160" y="92" width="60" height="26" rx="5" fill="#12261a" stroke="#3fb950"/><text x="190" y="109" text-anchor="middle">85353</text>
-            <rect x="225" y="92" width="60" height="26" rx="5" fill="#12261a" stroke="#3fb950"/><text x="255" y="109" text-anchor="middle">…</text>
-          </g>
-          <text x="170" y="142" fill="#3fb950" font-family="monospace" font-size="12" text-anchor="middle">12 direct subtasks — IN SCOPE</text>
-          <g opacity=".55">
-            <path d="M250 28 L310 28" stroke="#f85149" stroke-dasharray="4 3"/>
-            <rect x="228" y="186" width="180" height="0" fill="none"/>
-            <rect x="70" y="180" width="200" height="30" rx="6" fill="#2a1416" stroke="#f85149" stroke-dasharray="4 3"/>
-            <text x="170" y="200" fill="#f85149" font-family="monospace" font-size="12" text-anchor="middle">linked · blocks · clones</text>
-            <text x="170" y="232" fill="#f85149" font-family="monospace" font-size="12" text-anchor="middle">IGNORED ON PURPOSE</text>
-          </g>
-        </svg>
-      </div>
-      <div>
-        <div class="say">It only takes the ticket's real children. Linked tickets, "relates to", blockers — deliberately ignored.</div>
-        <p class="lead">Follow the links and the scope explodes. One ticket becomes forty. The whole point is <strong>small</strong>.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- 7 -->
-  <section class="slide" data-notes="This is the diagram that explains why the PRs are reviewable. Every branch from the SAME starting commit — never stacked on each other.">
-    <p class="kicker">the shape of the work</p>
-    <h2>Every branch starts from the same frozen commit</h2>
-    <div class="cols">
-      <div>
-        <svg viewBox="0 0 300 220" role="img" aria-label="BASE_SHA fanning out into four independent branches">
-          <circle cx="40" cy="110" r="13" fill="#1c2333" stroke="#e3b341" stroke-width="2"/>
-          <text x="40" y="145" fill="#e3b341" font-family="monospace" font-size="11" text-anchor="middle">BASE_SHA</text>
-          <g stroke="#30363d" fill="none">
-            <path d="M53 110 C90 110 90 30 130 30"/><path d="M53 110 C90 110 90 83 130 83"/>
-            <path d="M53 110 C90 110 90 137 130 137"/><path d="M53 110 C90 110 90 190 130 190"/>
-          </g>
-          <g font-family="monospace" font-size="11" fill="#3fb950">
-            <rect x="130" y="17" width="150" height="26" rx="5" fill="#12261a" stroke="#3fb950"/><text x="205" y="34" text-anchor="middle">RAD-85351 → PR</text>
-            <rect x="130" y="70" width="150" height="26" rx="5" fill="#12261a" stroke="#3fb950"/><text x="205" y="87" text-anchor="middle">RAD-85352 → PR</text>
-            <rect x="130" y="124" width="150" height="26" rx="5" fill="#12261a" stroke="#3fb950"/><text x="205" y="141" text-anchor="middle">RAD-85353 → PR</text>
-            <rect x="130" y="177" width="150" height="26" rx="5" fill="#12261a" stroke="#3fb950"/><text x="205" y="194" text-anchor="middle">RAD-85354 → PR</text>
-          </g>
-        </svg>
-        <p class="cap">parallel — never stacked</p>
-      </div>
-      <div>
-        <p class="big">Ticket 2's changes are <strong>never</strong> in ticket 3's pull request.</p>
-        <p class="lead">Each PR contains one ticket's worth of change, so a reviewer can actually hold it in their head. That only works because nothing builds on top of anything else.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- 8 -->
-  <section class="slide" data-notes="The core slide. Walk it left to right. Point out the two colours: blue = the foreman does it, purple = an agent does it. Then say: this whole strip repeats 12 times.">
-    <p class="kicker">the loop · repeats 12 times</p>
-    <h2>What happens to one subtask</h2>
-    <svg viewBox="0 0 980 300" role="img" aria-label="Lifecycle of one subtask from worktree to draft pull request">
-      <defs><marker id="ar" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-        <path d="M0 0 L7 3.5 L0 7 z" fill="#4b5563"/></marker></defs>
-      <g font-family="monospace" font-size="12.5" text-anchor="middle">
-        <g fill="#58a6ff">
-          <rect x="8" y="60" width="118" height="52" rx="8" fill="#0f1b2d" stroke="#58a6ff"/>
-          <text x="67" y="82">🌱 workshop</text><text x="67" y="100" font-size="10.5" fill="#6e7d8d">fresh copy</text>
-        </g>
-        <g fill="#bc8cff">
-          <rect x="150" y="60" width="118" height="52" rx="8" fill="#1a1330" stroke="#bc8cff"/>
-          <text x="209" y="82">📖 read</text><text x="209" y="100" font-size="10.5" fill="#6e7d8d">the ticket</text>
-          <rect x="292" y="60" width="118" height="52" rx="8" fill="#1a1330" stroke="#bc8cff"/>
-          <text x="351" y="82">🧭 read</text><text x="351" y="100" font-size="10.5" fill="#6e7d8d">repo rules</text>
-          <rect x="434" y="60" width="118" height="52" rx="8" fill="#1a1330" stroke="#bc8cff"/>
-          <text x="493" y="82">🛠️ write</text><text x="493" y="100" font-size="10.5" fill="#6e7d8d">the code</text>
-        </g>
-        <g fill="#58a6ff">
-          <rect x="576" y="60" width="118" height="52" rx="8" fill="#0f1b2d" stroke="#58a6ff"/>
-          <text x="635" y="82">🧪 test</text><text x="635" y="100" font-size="10.5" fill="#6e7d8d">foreman runs</text>
-        </g>
-        <g fill="#bc8cff">
-          <rect x="718" y="60" width="118" height="52" rx="8" fill="#1a1330" stroke="#bc8cff"/>
-          <text x="777" y="82">🔎 review</text><text x="777" y="100" font-size="10.5" fill="#6e7d8d">new agent</text>
-        </g>
-        <g fill="#3fb950">
-          <rect x="860" y="60" width="112" height="52" rx="8" fill="#12261a" stroke="#3fb950"/>
-          <text x="916" y="82">🎉 draft</text><text x="916" y="100" font-size="10.5" fill="#6e7d8d">pull request</text>
-        </g>
-        <g stroke="#4b5563" marker-end="url(#ar)" fill="none">
-          <path d="M126 86 L146 86"/><path d="M268 86 L288 86"/><path d="M410 86 L430 86"/>
-          <path d="M552 86 L572 86"/><path d="M694 86 L714 86"/><path d="M836 86 L856 86"/>
-        </g>
-        <path d="M635 112 C635 165 493 165 493 118" stroke="#e3b341" fill="none" marker-end="url(#ar)" stroke-dasharray="5 4"/>
-        <text x="564" y="182" fill="#e3b341" font-size="11">🔁 one repair attempt if tests fail</text>
+<section class="slide" data-notes="This is the control flow. Point out: everything above the dashed line happens once; everything below repeats per subtask, sequentially.">
+  <p class="kicker"><span class="part">part 1</span> · control flow</p>
+  <h2>What runs, in what order</h2>
+  <svg viewBox="0 0 560 380" role="img" aria-label="Execution order from cli.ts through runSubtask">
+    <defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0 0 L7 3.5 L0 7 z" fill="#4b5563"/></marker></defs>
+    <g font-family="ui-monospace,monospace" font-size="12.5">
+      <rect x="150" y="8" width="260" height="30" rx="6" fill="#0f1b2d" stroke="#79c0ff"/>
+      <text x="280" y="28" fill="#79c0ff" text-anchor="middle">cli.ts  main()</text>
+      <rect x="150" y="56" width="260" height="26" rx="5" fill="#161b22" stroke="#30363d"/>
+      <text x="280" y="74" fill="#9aa7b4" text-anchor="middle">parseArgs · validate</text>
+      <rect x="150" y="98" width="260" height="26" rx="5" fill="#161b22" stroke="#e3b341"/>
+      <text x="280" y="116" fill="#e3b341" text-anchor="middle">freeze BASE_SHA</text>
+      <rect x="150" y="140" width="260" height="26" rx="5" fill="#1a1330" stroke="#d2a8ff"/>
+      <text x="280" y="158" fill="#d2a8ff" text-anchor="middle">checkJiraConnection()</text>
+      <rect x="150" y="182" width="260" height="26" rx="5" fill="#1a1330" stroke="#d2a8ff"/>
+      <text x="280" y="200" fill="#d2a8ff" text-anchor="middle">discoverSubtasks()</text>
+      <path d="M20 228 L540 228" stroke="#30363d" stroke-dasharray="5 5"/>
+      <text x="20" y="222" fill="#6e7d8d" font-size="10.5">↑ once per run</text>
+      <text x="20" y="246" fill="#6e7d8d" font-size="10.5">↓ once per subtask, sequential</text>
+      <rect x="150" y="262" width="260" height="30" rx="6" fill="#0f1b2d" stroke="#79c0ff"/>
+      <text x="280" y="282" fill="#79c0ff" text-anchor="middle">worker.ts  runSubtask()</text>
+      <rect x="150" y="310" width="260" height="26" rx="5" fill="#12261a" stroke="#7ee787"/>
+      <text x="280" y="328" fill="#7ee787" text-anchor="middle">Outcome: pr | failed | skipped</text>
+      <g stroke="#4b5563" fill="none" marker-end="url(#a)">
+        <path d="M280 38 L280 52"/><path d="M280 82 L280 94"/><path d="M280 124 L280 136"/>
+        <path d="M280 166 L280 178"/><path d="M280 208 L280 256"/><path d="M280 292 L280 306"/>
       </g>
-      <g font-family="monospace" font-size="11.5">
-        <rect x="8" y="228" width="14" height="14" rx="3" fill="#0f1b2d" stroke="#58a6ff"/>
-        <text x="30" y="240" fill="#58a6ff">the foreman does it — code, git, tests, PR</text>
-        <rect x="360" y="228" width="14" height="14" rx="3" fill="#1a1330" stroke="#bc8cff"/>
-        <text x="382" y="240" fill="#bc8cff">an agent does it — reads, thinks, writes files</text>
+      <path d="M410 323 C480 323 480 277 412 277" stroke="#4b5563" fill="none" marker-end="url(#a)"/>
+      <text x="500" y="303" fill="#6e7d8d" font-size="10.5" text-anchor="middle">next</text>
+    </g>
+  </svg>
+</section>
+
+<section class="slide" data-notes="THE mechanism slide. If he understands this one flag, he understands the architecture. Everything else is bookkeeping.">
+  <p class="kicker"><span class="part">part 1</span> · the core mechanism</p>
+  <h2>Context isolation is one CLI flag</h2>
+  <div class="split">
+    <div>
+      <div class="filebar">src/claude.ts <span class="ln">— every model call</span></div>
+      <pre class="code">// no --resume  →  brand new context
+runClaude({ prompt, cwd })
+
+// with --resume →  same context continues
+runClaude({ prompt, cwd, resume: sessionId })</pre>
+      <div class="why">There is no session manager, no state machine, no cleanup. The <em>presence or absence
+      of one argv flag</em> is the entire isolation guarantee.</div>
+    </div>
+    <div>
+      <p class="lead" style="font-size:1.05rem">Per subtask, five distinct contexts:</p>
+      <div class="chain" style="font-size:.88rem">fetch ticket   <b>fresh</b>  → dies
+bootstrap  ─┐
+implement   │ <b>one</b>, resumed
+repair     ─┘  → dies
+claim Jira     <b>fresh</b>  → dies
+review         <b>fresh</b>  → dies
+PR metadata    <b>fresh</b>  → dies</div>
+      <p class="note">5 contexts · 6–7 process spawns</p>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-notes="The trust boundary. He will ask 'can the agent run arbitrary commands' — answer it before he asks.">
+  <p class="kicker"><span class="part">part 1</span> · the trust boundary</p>
+  <h2>Agents read and edit. The harness does everything irreversible.</h2>
+  <div class="split">
+    <div>
+      <div class="filebar">src/claude.ts <span class="ln">12–13</span></div>
+      <pre class="code">export const READ_ONLY_TOOLS =
+  ["Bash", "Edit", "Write", "NotebookEdit"];
+
+export const EDIT_NO_SHELL_TOOLS =
+  ["Bash", "NotebookEdit"];</pre>
+      <p class="note">passed as --disallowed-tools</p>
+    </div>
+    <div class="stack">
+      <ul class="pts">
+        <li>The implementer gets <span style="font-family:var(--mono);font-size:.92rem">EDIT_NO_SHELL_TOOLS</span> — it can edit files, <strong>Bash is denied</strong></li>
+        <li>Reviewer, PR-prep and all Jira agents get <span style="font-family:var(--mono);font-size:.92rem">READ_ONLY_TOOLS</span></li>
+        <li>worktree, branch, test execution, commit, push, PR — all in the harness</li>
+      </ul>
+      <div class="why">The agent can never tell me a test passed. I run it and read the exit code.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-notes="Module graph. Note proc.ts is the only leaf that touches the OS — every subprocess in the system goes through one function.">
+  <p class="kicker"><span class="part">part 1</span> · module graph</p>
+  <h2>Nine modules, one subprocess primitive</h2>
+  <svg viewBox="0 0 700 300" role="img" aria-label="Module dependency graph">
+    <g font-family="ui-monospace,monospace" font-size="12.5" text-anchor="middle">
+      <rect x="270" y="8" width="150" height="30" rx="6" fill="#0f1b2d" stroke="#79c0ff"/>
+      <text x="345" y="28" fill="#79c0ff">cli.ts</text>
+      <rect x="270" y="74" width="150" height="30" rx="6" fill="#0f1b2d" stroke="#79c0ff"/>
+      <text x="345" y="94" fill="#79c0ff">worker.ts</text>
+      <rect x="60" y="140" width="140" height="30" rx="6" fill="#1a1330" stroke="#d2a8ff"/>
+      <text x="130" y="160" fill="#d2a8ff">discovery.ts</text>
+      <rect x="230" y="140" width="130" height="30" rx="6" fill="#1a1330" stroke="#d2a8ff"/>
+      <text x="295" y="160" fill="#d2a8ff">claude.ts</text>
+      <rect x="390" y="140" width="100" height="30" rx="6" fill="#161b22" stroke="#30363d"/>
+      <text x="440" y="160" fill="#9aa7b4">git.ts</text>
+      <rect x="510" y="140" width="120" height="30" rx="6" fill="#161b22" stroke="#30363d"/>
+      <text x="570" y="160" fill="#9aa7b4">github.ts</text>
+      <rect x="270" y="216" width="150" height="30" rx="6" fill="#12261a" stroke="#7ee787"/>
+      <text x="345" y="236" fill="#7ee787">proc.ts  exec()</text>
+      <text x="345" y="272" fill="#6e7d8d" font-size="11">the only place a child process is spawned</text>
+      <g stroke="#3a4553" fill="none">
+        <path d="M345 38 L345 70"/>
+        <path d="M300 104 L150 136"/><path d="M330 104 L300 136"/>
+        <path d="M370 104 L430 136"/><path d="M395 104 L555 136"/>
+        <path d="M130 170 C130 200 260 200 300 212"/>
+        <path d="M295 170 L320 212"/><path d="M440 170 L400 212"/><path d="M565 170 C565 200 430 200 400 214"/>
       </g>
-    </svg>
-    <div class="say">Notice who runs the tests. Not the agent — <strong>me</strong>. The agent can't tell me it passed.</div>
-  </section>
+    </g>
+  </svg>
+  <p class="note">spinner.ts · usage.ts · report.ts · types.ts are leaves, omitted for clarity</p>
+</section>
 
-  <!-- 9 -->
-  <section class="slide" data-notes="Now narrate real output. Read each line, then say the sentence under it. This is the part you rehearse.">
-    <p class="kicker">live output · 1 of 3</p>
-    <h2>Fresh workshop, then read the ticket</h2>
-    <div class="term"><span class="b">🌱</span>  worktree from f1b7c7b55f
-      /tmp/a11y-fixer/…/RAD-85351/worktree</div>
-    <div class="say">A clean copy of the repo in a temp folder, pinned to the exact commit we started at. My real checkout is never touched.</div>
-    <div class="term"><span class="p">📖</span>  RAD-85351 fetched from Jira — <span class="g">887 chars</span>
-      artifacts/RAD-85351.jira.md</div>
-    <div class="say">It downloads the ticket text to a file and checks it's real. If it can't read the ticket, the job dies right here — I'd rather do nothing than build the wrong thing.</div>
-  </section>
+<!-- ============ PART 2 — THE CODE ============ -->
 
-  <!-- 10 -->
-  <section class="slide" data-notes="THE slide you are proudest of. Point at the branch name. Say clearly: I did not write that pattern anywhere in my code.">
-    <p class="kicker">live output · 2 of 3</p>
-    <h2>It reads <em>your</em> repo's rulebook</h2>
-    <div class="term"><span class="p">🧭</span>  bootstrap — reading repository instructions…   <span class="c">7m28s</span>
-      branch:       <span class="a">pstanecki/fix/RAD-85351/video-player-a11y-names</span>
-      verification: <span class="g">5 command(s) from repository conventions</span>
-                    · npm install
-                    · npx nx run video-player-mfe:lint
-                    · npx nx test video-player-mfe</div>
-    <div class="say">This is the bit I'm proudest of. It reads the repo's own AGENTS.md and docs, then tells me what to call the branch and which commands prove the work is correct. <strong>I never hardcoded any of that.</strong> That branch name is my team's convention, not mine.</div>
-    <p class="lead" style="font-size:1.1rem">Point it at a different repo and it follows different rules — with zero code changes.</p>
-  </section>
+<section class="slide" data-notes="Switch to the editor here if you want. From now on every slide is real code, in the order it executes.">
+  <p class="kicker"><span class="part">part 2</span></p>
+  <h1>The code,<br>in execution order</h1>
+  <p class="lead">Everything from here is verbatim from the repo, with real line numbers.</p>
+</section>
 
-  <!-- 11 -->
-  <section class="slide" data-notes="Claim → implement → verify → repair. The 'one attempt, no loops' line always gets a nod. Then the reviewer reveal.">
-    <p class="kicker">live output · 3 of 3</p>
-    <h2>Claim, build, verify, review, ship</h2>
-    <div class="term"><span class="a">📌</span>  Jira — assigned to Paweł Stanecki · <span class="g">In Progress</span>
-<span class="p">🛠️</span>   implementing…   <span class="c">15m37s</span>
-      24 file(s) changed
-<span class="b">🧪</span>  verification
-      <span class="g">✓</span>  npm install
-      <span class="g">✓</span>  npx nx run video-player-mfe:lint
-      <span class="r">✗</span>  npx nx test video-player-mfe
-<span class="a">🔁</span>  repair attempt (1 of 1)
-      <span class="g">✓</span>  npx nx test video-player-mfe
-<span class="p">🔎</span>  independent review   <span class="c">3m11s</span>
-      <span class="a">👀 MANUAL_REVIEW_REQUIRED</span>
-<span class="b">⬆️</span>   pushed pstanecki/fix/RAD-85351/…
-<span class="g">🎉</span>  Draft PR created — done in 31m17s
-      https://github.com/…/pull/1096</div>
-    <div class="say">One repair attempt. <strong>One.</strong> No infinite loops — if it can't fix it, it fails honestly and moves on to the next ticket.</div>
-  </section>
+<section class="slide" data-notes="Entry point. Two things worth saying: no build step, and the guard means importing cli.ts in a test does not launch a run.">
+  <p class="kicker"><span class="part">part 2</span> · entry</p>
+  <h2>npm → tsx → cli.ts</h2>
+  <div class="filebar">package.json</div>
+  <pre class="code">"a11y-fixer": "tsx src/cli.ts"</pre>
+  <div style="margin-top:1.2rem"></div>
+  <div class="filebar">src/cli.ts <span class="ln">230</span></div>
+  <pre class="code">const invokedDirectly =
+  process.argv[1] && import.meta.url === `file://${path.resolve(process.argv[1])}`;
 
-  <!-- 12 -->
-  <section class="slide" data-notes="Explain why the reviewer is a stranger. 'Marking its own homework' is the line that lands.">
-    <p class="kicker">the clever bit</p>
-    <h2>The reviewer has never met the builder</h2>
-    <div class="cols">
-      <div>
-        <svg viewBox="0 0 320 250" role="img" aria-label="Builder context and reviewer context are separate">
-          <rect x="10" y="12" width="140" height="150" rx="10" fill="#1a1330" stroke="#bc8cff"/>
-          <text x="80" y="38" fill="#bc8cff" font-family="monospace" font-size="12" text-anchor="middle">BUILDER</text>
-          <g font-family="monospace" font-size="10.5" fill="#9aa7b4" text-anchor="middle">
-            <text x="80" y="66">read the ticket</text><text x="80" y="86">read repo docs</text>
-            <text x="80" y="106">wrote the code</text><text x="80" y="126">fixed the test</text>
-            <text x="80" y="150" fill="#6e7d8d">its reasoning</text>
-          </g>
-          <rect x="170" y="12" width="140" height="150" rx="10" fill="#1a1330" stroke="#bc8cff"/>
-          <text x="240" y="38" fill="#bc8cff" font-family="monospace" font-size="12" text-anchor="middle">REVIEWER</text>
-          <g font-family="monospace" font-size="10.5" fill="#9aa7b4" text-anchor="middle">
-            <text x="240" y="66">the ticket</text><text x="240" y="86">the diff</text>
-            <text x="240" y="106">the repo docs</text><text x="240" y="126">the test results</text>
-            <text x="240" y="150" fill="#6e7d8d">nothing else</text>
-          </g>
-          <path d="M155 87 L165 87" stroke="#f85149" stroke-width="2"/>
-          <path d="M150 72 L170 102 M170 72 L150 102" stroke="#f85149" stroke-width="2.5"/>
-          <text x="160" y="200" fill="#f85149" font-family="monospace" font-size="12" text-anchor="middle">no shared memory</text>
-          <text x="160" y="224" fill="#6e7d8d" font-family="monospace" font-size="11" text-anchor="middle">PASS · MANUAL_REVIEW · FAIL</text>
-        </svg>
-      </div>
-      <div>
-        <div class="say">If the reviewer could see the builder's justification, it would just be marking its own homework.</div>
-        <p class="lead">It gets the ticket, the diff, the repo's standards and the test results — and forms its own opinion from scratch.</p>
-        <p class="lead"><strong class="a">MANUAL_REVIEW_REQUIRED</strong> isn't a failure. Accessibility often genuinely needs a human with a screen reader. That verdict still ships a draft PR — it just says so in the description.</p>
-      </div>
+if (invokedDirectly) {
+  main().catch((err: Error) =&gt; {
+    stopSpinner();
+    console.error(`\n❌  a11yFixer: ${err.message}`);
+    process.exit(1);
+  });
+}</pre>
+  <div class="why">No build step — tsx transpiles in memory. The guard keeps <span style="font-family:var(--mono)">cli.ts</span>
+  importable from tests without launching a run. One top-level catch is the only global error handler.</div>
+</section>
+
+<section class="slide" data-notes="parseArgs is pure — that is the point. It is the most-tested function in the repo because it is the easiest to test.">
+  <p class="kicker"><span class="part">part 2</span> · 1 of 13</p>
+  <h2>parseArgs — pure, no I/O</h2>
+  <div class="filebar">src/cli.ts <span class="ln">31</span></div>
+  <pre class="code sm">for (let i = 0; i &lt; argv.length; i++) {
+  const a = (argv[i] as string).trim();
+  // A stray backslash or pasted shell decoration produces empty args; ignore rather than choke.
+  if (a === "" || a === "\\") continue;
+  if (a === "--repo") repo = (argv[++i] ?? "").trim();
+  else if (a === "--model") model = (argv[++i] ?? "").trim() || null;
+  else if (a === "--dry-run") dryRun = true;
+  else if (a === "--jira-tool") jiraTool = (argv[++i] ?? "").trim();
+  else if (a.startsWith("--")) throw new Error(`unknown flag: ${a}`);
+  else if (!parentUrl) parentUrl = a;
+  else throw new Error(`unexpected argument: "${a}" …`);
+}</pre>
+  <div class="why">No argument-parsing library. Pure in, pure out, so it is trivially unit tested — and it is,
+  heavily. Nothing has touched the filesystem yet.</div>
+</section>
+
+<section class="slide" data-notes="Fail-fast preflight. Cheapest checks first, network last. Point out gh auth status is the only one that costs anything.">
+  <p class="kicker"><span class="part">part 2</span> · 2 of 13</p>
+  <h2>validate — fail before doing anything</h2>
+  <div class="filebar">src/cli.ts <span class="ln">69</span></div>
+  <pre class="code sm">const dir = await stat(repo).catch(() =&gt; null);
+if (!dir?.isDirectory())              throw new Error(`target repository path does not exist: ${repo}`);
+if (!(await git.isGitRepo(repo)))     throw new Error(`not a git repository: ${repo}`);
+if (!(await commandExists("git")))    throw new Error("`git` not found on PATH");
+if (!(await commandExists("claude"))) throw new Error("`claude` CLI not found on PATH");
+
+if (!process.env["CLAUDE_CODE_OAUTH_TOKEN"] &amp;&amp; !args.allowMissingToken) { … }
+
+const ghError = await checkGh();      // gh auth status
+if (ghError) throw new Error(ghError);</pre>
+  <div class="why">Ordered cheapest-first: <span style="font-family:var(--mono)">stat</span> before subprocess, subprocess before network.
+  <span style="font-family:var(--mono)">git.isGitRepo</span> is <span style="font-family:var(--mono)">git rev-parse --git-dir</span>;
+  <span style="font-family:var(--mono)">commandExists</span> is <span style="font-family:var(--mono)">command -v</span>.</div>
+</section>
+
+<section class="slide" data-notes="The single most important variable in the program. Read once, never re-read. This is what makes the PRs independent.">
+  <p class="kicker"><span class="part">part 2</span> · 3 of 13</p>
+  <h2>Freeze the base revision</h2>
+  <div class="filebar">src/cli.ts <span class="ln">96</span></div>
+  <pre class="code">// Freeze the base revision. Every subtask branch starts from exactly this commit.
+const baseSha    = await git.headSha(repo);          // git rev-parse HEAD
+const baseBranch = (await git.currentBranch(repo))   // git rev-parse --abbrev-ref HEAD
+                ?? (await defaultBranch(repo));      // gh repo view --json defaultBranchRef</pre>
+  <div class="split" style="margin-top:1.4rem">
+    <div>
+      <div class="why">Captured once, never re-read. Twelve worktrees are all created from this SHA, so no
+      subtask's changes can appear in another's diff or PR.</div>
     </div>
-  </section>
-
-  <!-- 13 -->
-  <section class="slide" data-notes="The design principle in one line. This is the answer to 'doesn't the AI just make up your coding standards?'">
-    <p class="kicker">the design rule</p>
-    <h2>Three jobs, kept strictly apart</h2>
-    <div class="cols3">
-      <div class="card"><p class="tag">a11yFixer</p><h3 class="b">knows the process</h3>
-        <p>Make a workshop. Run the tests. Commit. Push. Open a draft PR. Never <em>what</em> to write.</p></div>
-      <div class="card"><p class="tag">your repo</p><h3 class="g">knows the policy</h3>
-        <p>Branch names, commit style, which tests, PR template, accessibility standards. Lives in <span style="font-family:var(--mono);font-size:.9rem">AGENTS.md</span> — not in my code.</p></div>
-      <div class="card"><p class="tag">the agent</p><h3 class="p">interprets the policy</h3>
-        <p>Reads the repo, works out what the rules mean for this ticket, and follows them.</p></div>
+    <div>
+      <svg viewBox="0 0 260 150" role="img" aria-label="One base SHA fanning into four branches">
+        <circle cx="26" cy="75" r="11" fill="#1c2333" stroke="#e3b341" stroke-width="2"/>
+        <g stroke="#3a4553" fill="none">
+          <path d="M37 75 C70 75 70 20 100 20"/><path d="M37 75 C70 75 70 57 100 57"/>
+          <path d="M37 75 C70 75 70 93 100 93"/><path d="M37 75 C70 75 70 130 100 130"/>
+        </g>
+        <g font-family="ui-monospace,monospace" font-size="10.5" fill="#7ee787">
+          <text x="106" y="24">RAD-85351</text><text x="106" y="61">RAD-85352</text>
+          <text x="106" y="97">RAD-85353</text><text x="106" y="134">RAD-85354</text>
+        </g>
+      </svg>
     </div>
-    <p class="lead" style="margin-top:1.8rem;font-size:1.25rem">There is <strong>not one line</strong> in a11yFixer that knows how UserTesting names branches or runs tests. That's why it would work on your repo tomorrow.</p>
-  </section>
-
-  <!-- 14 -->
-  <section class="slide" data-notes="The war story. Tell it like a story — it's the most memorable part of the whole talk. Pause after 'and reported no problem at all'.">
-    <p class="kicker">the bug that shaped everything</p>
-    <h2>It built a whole pull request without ever reading the ticket</h2>
-    <ol class="steps">
-      <li>I have ~350 tools connected, so Claude Code <strong>hides</strong> them behind a search</li>
-      <li>The agent searched for <span style="font-family:var(--mono);font-size:.95rem">"jira atlassian"</span> — and got <strong class="r">nothing back</strong></li>
-      <li>So it concluded Jira didn't exist… <strong>and carried on anyway</strong></li>
-      <li>It implemented from the ticket <em>title</em>, opened a PR, and <strong class="r">reported no problem at all</strong></li>
-    </ol>
-    <div class="say" style="margin-top:1.6rem">The failure wasn't the AI being stupid. It was <strong>my harness trusting a self-report.</strong></div>
-  </section>
-
-  <!-- 15 -->
-  <section class="slide" data-notes="The fix, and the principle it generalises to. This is the engineering-maturity slide.">
-    <p class="kicker">the fix · and the rule it created</p>
-    <h2>Prove it. Never claim it.</h2>
-    <div class="cols">
-      <div>
-        <p class="lead" style="font-size:1.15rem">Ask for a tool <strong>by exact name</strong>, never by fuzzy search:</p>
-        <div class="term" style="font-size:.85rem">ToolSearch(<span class="g">"select:mcp__claude_ai_Atlassian__getJiraIssue"</span>)</div>
-        <p class="lead" style="font-size:1.15rem">Fetch the ticket <strong>once, to a file</strong>. Every later agent reads that file.</p>
-        <div class="term" style="font-size:.85rem">artifacts/RAD-85351.jira.md</div>
-        <p class="lead" style="font-size:1.05rem">"Did it actually read the ticket?" is now answerable by opening a file.</p>
-      </div>
-      <div>
-        <p class="tag" style="margin-bottom:.7rem">nothing passes on its own say-so</p>
-        <div class="card" style="margin-bottom:.7rem"><p><strong>Jira read</strong> — only if the ticket's title actually came back</p></div>
-        <div class="card" style="margin-bottom:.7rem"><p><strong>Jira write</strong> — only if a real account ID actually came back</p></div>
-        <div class="card" style="margin-bottom:.7rem"><p><strong>Ticket text</strong> — long enough, <em>and</em> mentions the right key</p></div>
-        <div class="card" style="margin-bottom:.7rem"><p><strong>The work</strong> — <span style="font-family:var(--mono);font-size:.9rem">git diff</span> shows files really changed</p></div>
-        <div class="card"><p><strong>The verdict</strong> — anything unreadable becomes <span class="a">MANUAL_REVIEW</span>, never <span class="g">PASS</span></p></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- 16 -->
-  <section class="slide" data-notes="Use this slide as your map when you switch to the editor. Open worker.ts first — the Step A..L comments ARE the story.">
-    <p class="kicker">open these in your editor</p>
-    <h2>Where the code lives</h2>
-    <table class="files">
-      <tr class="hi"><td>src/worker.ts</td><td><strong>Start here.</strong> One subtask, start to finish. The <span style="font-family:var(--mono)">// --- Step A … L ---</span> comments are the story in order — <span style="font-family:var(--mono)">runSubtask()</span> at line 105</td></tr>
-      <tr><td>src/cli.ts</td><td>The front door. Checks your setup, freezes the starting commit, loops the subtasks — <span style="font-family:var(--mono)">main()</span> at line 91</td></tr>
-      <tr><td>src/discovery.ts</td><td>Everything Jira: connection check, find subtasks, fetch ticket, claim it</td></tr>
-      <tr><td>src/claude.ts</td><td>Starts a Claude session and reads its answer. ~110 lines</td></tr>
-      <tr><td>src/git.ts · github.ts</td><td>Worktrees, branches, commits, push, draft PR</td></tr>
-      <tr class="hi"><td>prompts/*.md</td><td><strong>The actual intelligence.</strong> Nine plain-English files. This is where the behaviour really lives — no code required to change how it thinks</td></tr>
-    </table>
-    <div class="say" style="margin-top:1.4rem">Half of this project is TypeScript. The other half is English.</div>
-  </section>
-
-  <!-- 17 -->
-  <section class="slide" data-notes="Pre-empt the 'is this safe?' question. Say it before they ask and you look like you thought it through — because you did.">
-    <p class="kicker">deliberately not built</p>
-    <h2>What it refuses to do</h2>
-    <div class="cols3">
-      <div class="card"><h3 class="r">Never merges</h3><p>Every PR is a draft. A human always decides.</p></div>
-      <div class="card"><h3 class="r">Never force-pushes</h3><p>Only its own new branch, never yours.</p></div>
-      <div class="card"><h3 class="r">Never touches your checkout</h3><p>All work happens in temp folders.</p></div>
-      <div class="card"><h3 class="r">No shell for the coder</h3><p>The building agent can edit files but can't run commands. I kept that.</p></div>
-      <div class="card"><h3 class="r">No retry loops</h3><p>Exactly one repair attempt, then it fails honestly.</p></div>
-      <div class="card"><h3 class="r">Never deletes evidence</h3><p>Failed attempts stay on disk so I can go and look.</p></div>
-    </div>
-    <p class="lead" style="margin-top:1.6rem">Worst case: a draft pull request I close. That's the whole blast radius.</p>
-  </section>
-
-  <!-- 18 -->
-  <section class="slide" data-notes="Close on the question, not on the tech. It's an experiment — that's a strength, not a hedge.">
-    <p class="kicker">why it exists</p>
-    <h2>It was built to answer one question</h2>
-    <p class="big" style="margin:1.5rem 0 2rem;border-left:3px solid var(--blue);padding-left:1.4rem">
-      Is <em>parent ticket → isolated agents → real tests → independent review → small draft PRs</em>
-      useful enough to keep investing in?</p>
-    <div class="cols3">
-      <div class="card"><h3 class="g">Answered</h3><p>It produces real, reviewable pull requests that follow team conventions.</p></div>
-      <div class="card"><h3 class="a">Still open</h3><p>Is the review verdict trustworthy? Is 30 min &amp; ~$20 per ticket worth it?</p></div>
-      <div class="card"><h3 class="b">Next</h3><p>Run subtasks in parallel. Try it on ordinary bugs, not just accessibility.</p></div>
-    </div>
-    <p class="lead" style="margin-top:2rem;font-family:var(--mono);font-size:1rem">github.com/kendyl93/a11yFixer</p>
-  </section>
-
   </div>
+</section>
 
-  <div class="chrome">
-    <button id="prev" aria-label="Previous slide">←</button>
-    <button id="next" aria-label="Next slide">→</button>
-    <span id="count">1 / 18</span>
-    <div class="prog"><i id="bar"></i></div>
-    <span><kbd>←</kbd> <kbd>→</kbd> move · <kbd>S</kbd> speaker notes · <kbd>F</kbd> fullscreen</span>
-    <button id="notesBtn" aria-pressed="false">speaker notes</button>
+<section class="slide" data-notes="Step 0. Show the call chain rather than the body — the shape is what matters, and it is the same shape for every agent call in the codebase.">
+  <p class="kicker"><span class="part">part 2</span> · 4 of 13</p>
+  <h2>Step 0 — prove Jira works before anything else</h2>
+  <div class="chain"><b>cli.ts:119</b>  checkJiraConnection()
+   └── <b>discovery.ts</b>  renderPrompt(<i>"check-jira.md"</i>, { JIRA_WRITE_ACCESS })
+   └── <b>discovery.ts</b>  runClaude({ cwd: repo, jsonSchema: CHECK_SCHEMA,
+                                       disallowedTools: READ_ONLY_TOOLS })
+         └── <b>claude.ts:67</b>  runClaude()
+               └── <b>proc.ts:15</b>  exec("claude", […])   <i>← child process</i>
+   └── <b>discovery.ts</b>  parseJiraCheck(res.structured, fallbackTool)</div>
+  <div class="why">This is the shape of <em>every</em> agent call in the codebase: render a markdown prompt,
+  run it under a JSON schema, parse the structured result. Nothing else in the repo talks to a model.</div>
+  <p class="lead" style="margin-top:1rem;font-size:1.05rem">If <span style="font-family:var(--mono)">readOk</span> is false it throws at <span style="font-family:var(--mono)">cli.ts:143</span> —
+  no worktree, no branch, nothing created. If <span style="font-family:var(--mono)">writeOk</span> is false it warns and continues.</p>
+</section>
+
+<section class="slide" data-notes="The most important function in the program. Spend time here. Three details to call out — stdin, json-schema, resume.">
+  <p class="kicker"><span class="part">part 2</span> · 5 of 13</p>
+  <h2>runClaude — the only path to a model</h2>
+  <div class="filebar">src/claude.ts <span class="ln">67</span></div>
+  <pre class="code sm">const args = ["-p", "--output-format", "json", "--permission-mode", "bypassPermissions"];
+
+if (call.resume)                args.push("--resume", call.resume);
+if (call.model)                 args.push("--model", call.model);
+if (call.disallowedTools?.length) args.push("--disallowed-tools", ...call.disallowedTools);
+if (call.addDirs?.length)       args.push("--add-dir", ...call.addDirs);
+if (call.jsonSchema)            args.push("--json-schema", JSON.stringify(call.jsonSchema));
+
+const res = await exec("claude", args, {
+  cwd: call.cwd,
+  timeoutMs: call.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  // The prompt goes over stdin so large diffs never hit argv limits.
+  stdin: call.prompt,
+});</pre>
+  <ul class="pts" style="margin-top:.8rem">
+    <li><strong>stdin, not argv</strong> — a 200 KB diff would blow <span style="font-family:var(--mono);font-size:.92rem">ARG_MAX</span></li>
+    <li><strong>--json-schema</strong> forces structured output — no regex-parsing of prose</li>
+    <li><strong>--resume</strong> present or absent — the isolation decision, made per call</li>
+  </ul>
+</section>
+
+<section class="slide" data-notes="How the response is read. The structured_output fallback matters: schema-first, prose-scraping only as a safety net.">
+  <p class="kicker"><span class="part">part 2</span> · 6 of 13</p>
+  <h2>Reading the response</h2>
+  <div class="filebar">src/claude.ts <span class="ln">88</span></div>
+  <pre class="code sm">const parsed = JSON.parse(res.stdout);
+
+const text = typeof parsed["result"] === "string" ? parsed["result"] : "";
+const structured =
+  parsed["structured_output"] != null
+    ? parsed["structured_output"]
+    : extractJson(text);            // fallback: scrape a JSON object out of prose
+
+return {
+  sessionId: String(parsed["session_id"] ?? ""),   // ← what --resume needs next time
+  text, structured,
+  isError: parsed["is_error"] === true || parsed["subtype"] !== "success",
+  raw: res.stdout,
+  usage: parseUsage(parsed),        // tokens, cost, context %
+};</pre>
+  <div class="why"><span style="font-family:var(--mono)">sessionId</span> is the handle. Store it and pass it back as
+  <span style="font-family:var(--mono)">resume</span> to continue a context; drop it to end that context forever.</div>
+</section>
+
+<section class="slide" data-notes="RunContext is the only cross-subtask state. Say that explicitly — no model state ever crosses the loop boundary.">
+  <p class="kicker"><span class="part">part 2</span> · 7 of 13</p>
+  <h2>The loop, and the only shared state</h2>
+  <div class="split">
+    <div>
+      <div class="filebar">src/cli.ts <span class="ln">188</span></div>
+      <pre class="code sm">const ctx: RunContext = {
+  repoPath: repo,
+  baseSha, baseBranch, runDir,
+  model: args.model,
+  dryRun: args.dryRun,
+  jiraTool, jiraAccount,
+};
+
+for (const subtask of discovery.subtasks) {
+  if (isAlreadyDone(subtask.status)) { … continue; }
+  try   { outcomes.push(await runSubtask(ctx, subtask)); }
+  catch { outcomes.push({ kind: "failed", … }); }
+}</pre>
+    </div>
+    <div class="stack">
+      <div class="why"><span style="font-family:var(--mono)">RunContext</span> is paths and strings. <strong>No model state
+      crosses the loop boundary</strong> — that is the isolation guarantee, enforced by the type.</div>
+      <ul class="pts">
+        <li>Sequential by design — no concurrency in v0</li>
+        <li><span style="font-family:var(--mono);font-size:.92rem">try/catch</span> per iteration: one bad subtask never kills the run</li>
+      </ul>
+    </div>
   </div>
-  <div class="notes" id="notes" role="region" aria-label="Speaker notes"></div>
+</section>
+
+<section class="slide" data-notes="Now inside runSubtask. The fail() closure is worth pointing at — it returns, it does not throw. That distinction is deliberate.">
+  <p class="kicker"><span class="part">part 2</span> · 8 of 13</p>
+  <h2>runSubtask — setup and the failure path</h2>
+  <div class="filebar">src/worker.ts <span class="ln">105</span></div>
+  <pre class="code sm">export async function runSubtask(ctx: RunContext, subtask: Subtask): Promise&lt;Outcome&gt; {
+  const worktree  = path.join(ctx.runDir, subtask.key, "worktree");
+  const artifacts = path.join(ctx.runDir, subtask.key, "artifacts");
+  let usage = emptyUsage();
+
+  const fail = (reason: string, branch: string | null, verdict?: Verdict): Outcome =&gt; {
+    stopSpinner();
+    detail(`worktree preserved: ${worktree}`);
+    return { kind: "failed", subtask, reason, branch, worktree, verdict, usage };
+  };</pre>
+  <div class="why"><span style="font-family:var(--mono)">fail()</span> <strong>returns</strong> an Outcome — it never throws.
+  Throwing is reserved for harness bugs, which the loop's catch handles. Two error channels, deliberately separated.</div>
+</section>
+
+<section class="slide" data-notes="Step A. One git command. Note --detach: no branch yet, because the branch name has not been discovered.">
+  <p class="kicker"><span class="part">part 2</span> · 9 of 13</p>
+  <h2>Step A — the worktree</h2>
+  <div class="filebar">src/worker.ts <span class="ln">135</span></div>
+  <pre class="code">await git.addDetachedWorktree(ctx.repoPath, worktree, ctx.baseSha);</pre>
+  <div style="margin-top:1.2rem"></div>
+  <div class="filebar">src/git.ts <span class="ln">44</span></div>
+  <pre class="code">export async function addDetachedWorktree(repo, worktreePath, baseSha) {
+  await git(repo, ["worktree", "add", "--detach", worktreePath, baseSha]);
+}</pre>
+  <div class="why"><strong>Detached</strong>, because the branch name isn't known yet — it comes from the repo's own
+  conventions, two steps later. The user's real checkout is never touched.</div>
+</section>
+
+<section class="slide" data-notes="The gate. This is the one place the code refuses to continue. Worth dwelling on for a senior dev — it is a design stance, not an error handler.">
+  <p class="kicker"><span class="part">part 2</span> · 10 of 13</p>
+  <h2>The ticket gate — refuse to work blind</h2>
+  <div class="filebar">src/worker.ts <span class="ln">137</span></div>
+  <pre class="code sm">const { result: ticket, usage: ticketUsage } = await fetchSubtaskTicket({
+  subtask, cwd: worktree, model: ctx.model, jiraTool: ctx.jiraTool,
+});
+
+if (!ticket.ok) {
+  return fail(
+    `Jira unavailable: ${ticket.error}. Refusing to implement a ticket that was never read.`,
+    null,                                  // ← no branch was ever created
+  );
+}
+await writeFile(ticketPath, ticket.markdown);       // artifacts/&lt;KEY&gt;.jira.md
+const jiraAccess = jiraAccessBlock(ctx.jiraTool, ticketPath);</pre>
+  <div class="why">The ticket is fetched <strong>once</strong>, to disk, and validated — right length, mentions the key.
+  Every later agent reads that file instead of re-querying. "Did it actually read the ticket?" becomes answerable
+  by opening a file.</div>
+</section>
+
+<section class="slide" data-notes="Bootstrap → branch → implement. The key beat: implSession is captured, then reused. Same context, two calls.">
+  <p class="kicker"><span class="part">part 2</span> · 11 of 13</p>
+  <h2>Bootstrap, branch, implement</h2>
+  <div class="filebar">src/worker.ts <span class="ln">169 · 205 · 238</span></div>
+  <pre class="code sm">const bootstrap = await runClaude({ prompt: bootstrapPrompt, cwd: worktree,
+                                    disallowedTools: EDIT_NO_SHELL_TOOLS,
+                                    jsonSchema: BOOTSTRAP_SCHEMA });
+const implSession = bootstrap.sessionId;             // ← captured here
+const branchName  = b["branchName"];                 // ← from the repo's conventions
+const verificationCommands = b["verificationCommands"];
+
+if (!(await git.isValidBranchName(ctx.repoPath, branchName))) return fail(…);
+await git.createBranch(worktree, branchName);        // git switch -c
+
+const impl = await runClaude({ prompt: implementPrompt, cwd: worktree,
+                               resume: implSession,  // ← SAME context
+                               disallowedTools: EDIT_NO_SHELL_TOOLS });</pre>
+  <div class="why">a11yFixer never invents a branch name or a test command — it asks the agent, which reads the
+  repo's <span style="font-family:var(--mono)">AGENTS.md</span>. The harness only validates it with
+  <span style="font-family:var(--mono)">git check-ref-format</span>.</div>
+</section>
+
+<section class="slide" data-notes="Verification. The harness runs the commands. Show that results feed the repair prompt, and repair is capped at one.">
+  <p class="kicker"><span class="part">part 2</span> · 12 of 13</p>
+  <h2>Verification runs in the harness</h2>
+  <div class="filebar">src/worker.ts <span class="ln">85</span></div>
+  <pre class="code sm">for (const command of commands) {
+  const r = await execShell(command, cwd, VERIFY_TIMEOUT_MS);   // /bin/sh -c, in the worktree
+  results.push({ command, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, … });
+  sp.stop(r.exitCode === 0 ? "   ✓" : "   ✗");
+}</pre>
+  <div style="margin-top:1.1rem"></div>
+  <div class="filebar">src/worker.ts <span class="ln">259</span></div>
+  <pre class="code sm">if (results.some((r) =&gt; r.exitCode !== 0)) {
+  const repair = await runClaude({ …, resume: implSession });   // same context, sees its own work
+  results = await runVerification(verificationCommands, worktree);
+  if (results.some((r) =&gt; r.exitCode !== 0))
+    return fail("deterministic verification failed after one repair attempt", branchName);
+}</pre>
+  <div class="why">Exactly one repair, no loop. The failure text passed into the repair prompt is real stdout/stderr,
+  clipped to 20 KB per command.</div>
+</section>
+
+<section class="slide" data-notes="Review and ship. Two things: no resume on the reviewer, and the --cached diff trick. The diff question is the one a senior dev always asks.">
+  <p class="kicker"><span class="part">part 2</span> · 13 of 13</p>
+  <h2>Independent review, then ship</h2>
+  <div class="filebar">src/worker.ts <span class="ln">287 · 303 · 370 · 381</span></div>
+  <pre class="code sm">await git.stageAll(worktree);                              // git add -A
+const diff = await git.diffFromBase(worktree, ctx.baseSha); // git diff --cached &lt;BASE_SHA&gt;
+await writeFile(diffPath, diff);
+
+const reviewRes = await runClaude({ prompt: reviewPrompt, cwd: worktree,
+                                    disallowedTools: READ_ONLY_TOOLS,
+                                    addDirs: [artifacts] });   // ← no resume: fresh context
+if (verdict === "FAIL") return fail(`reviewer FAIL: ${explanation}`, branchName, verdict);
+
+await git.commit(worktree, msgPath);                    // git commit -F
+await git.pushBranch(worktree, remote, branchName);     // git push -u remote b:b
+const prUrl = await createDraftPr({ …, head: branchName, base: ctx.baseBranch });</pre>
+  <div class="why"><span style="font-family:var(--mono)">git add -A</span> then <span style="font-family:var(--mono)">git diff --cached &lt;BASE_SHA&gt;</span>
+  compares the base <em>tree</em> to the <em>index</em>. It picks up new files, and stays correct whether or not the
+  agent committed anything itself — one expression that works at every stage.</div>
+</section>
+
+<section class="slide" data-notes="Close by handing him the reading order. Then open worker.ts and scroll — the Step comments are the story.">
+  <p class="kicker">read it yourself</p>
+  <h2>Where to look, in this order</h2>
+  <ul class="pts" style="font-size:1.15rem">
+    <li><span style="font-family:var(--mono);color:var(--blue)">src/worker.ts:105</span> — <span style="font-family:var(--mono);font-size:.92rem">runSubtask()</span>. The
+      <span style="font-family:var(--mono);font-size:.92rem">// --- Step A … L ---</span> comments are the whole story in order</li>
+    <li><span style="font-family:var(--mono);color:var(--blue)">src/claude.ts:67</span> — the only function that starts a model</li>
+    <li><span style="font-family:var(--mono);color:var(--blue)">src/cli.ts:91</span> — <span style="font-family:var(--mono);font-size:.92rem">main()</span>, top to bottom, ~100 lines</li>
+    <li><span style="font-family:var(--mono);color:var(--blue)">prompts/*.md</span> — nine markdown files; roughly half the project's behaviour lives here, not in TypeScript</li>
+    <li><span style="font-family:var(--mono);color:var(--blue)">docs/WALKTHROUGH.md</span> — this deck as text, with every underlying git/gh command</li>
+  </ul>
+  <p class="lead" style="margin-top:1.8rem;font-family:var(--mono);font-size:1rem">github.com/kendyl93/a11yFixer</p>
+</section>
+
+</div>
+
+<div class="chrome">
+  <button id="prev" aria-label="Previous slide">←</button>
+  <button id="next" aria-label="Next slide">→</button>
+  <span id="count">1 / 21</span>
+  <div class="prog"><i id="bar"></i></div>
+  <span><kbd>←</kbd> <kbd>→</kbd> move · <kbd>S</kbd> notes · <kbd>F</kbd> fullscreen</span>
+  <button id="notesBtn" aria-pressed="false">speaker notes</button>
+</div>
+<div class="notes" id="notes" role="region" aria-label="Speaker notes"></div>
 </div>
 
 <script>
-  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  // minimal TS highlighter: comments and strings first, then keywords
+  var KW = /\b(const|let|var|await|async|function|return|if|else|for|of|in|throw|new|export|import|from|try|catch|type|interface|null|true|false|typeof|as)\b/g;
+  function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  document.querySelectorAll('pre.code').forEach(function(pre){
+    var src = pre.textContent;
+    var out = '', re = /(\/\/[^\n]*)|(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
+    var last = 0, m;
+    function plain(t){ return esc(t).replace(KW, '<span class="kw">$1</span>'); }
+    while ((m = re.exec(src)) !== null) {
+      out += plain(src.slice(last, m.index));
+      out += m[1] ? '<span class="cm">' + esc(m[1]) + '</span>'
+                  : '<span class="st">' + esc(m[2]) + '</span>';
+      last = re.lastIndex;
+    }
+    out += plain(src.slice(last));
+    pre.innerHTML = out;
+  });
+
+  var slides = [].slice.call(document.querySelectorAll('.slide'));
   var i = 0, notesOn = false;
   var notes = document.getElementById('notes'), bar = document.getElementById('bar'),
       count = document.getElementById('count'), notesBtn = document.getElementById('notesBtn');
-
   function show(n){
     i = Math.max(0, Math.min(slides.length - 1, n));
     slides.forEach(function(s, k){ s.classList.toggle('on', k === i); });
     count.textContent = (i + 1) + ' / ' + slides.length;
     bar.style.width = ((i + 1) / slides.length * 100) + '%';
-    notes.innerHTML = '<b>Slide ' + (i + 1) + '</b> — ' + (slides[i].dataset.notes || '');
+    notes.innerHTML = '<b>' + (i + 1) + '</b> — ' + (slides[i].dataset.notes || '');
     location.hash = i + 1;
   }
-  function toggleNotes(){
-    notesOn = !notesOn;
-    notes.classList.toggle('on', notesOn);
-    notesBtn.setAttribute('aria-pressed', String(notesOn));
-  }
+  function toggleNotes(){ notesOn = !notesOn; notes.classList.toggle('on', notesOn);
+    notesBtn.setAttribute('aria-pressed', String(notesOn)); }
   document.addEventListener('keydown', function(e){
-    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown'){ e.preventDefault(); show(i + 1); }
-    else if (e.key === 'ArrowLeft' || e.key === 'PageUp'){ e.preventDefault(); show(i - 1); }
-    else if (e.key === 'Home'){ show(0); } else if (e.key === 'End'){ show(slides.length - 1); }
-    else if (e.key === 's' || e.key === 'S'){ toggleNotes(); }
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown'){ e.preventDefault(); show(i+1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp'){ e.preventDefault(); show(i-1); }
+    else if (e.key === 'Home') show(0); else if (e.key === 'End') show(slides.length-1);
+    else if (e.key === 's' || e.key === 'S') toggleNotes();
     else if (e.key === 'f' || e.key === 'F'){
-      if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen();
-    }
+      if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
   });
-  document.getElementById('next').onclick = function(){ show(i + 1); };
-  document.getElementById('prev').onclick = function(){ show(i - 1); };
+  document.getElementById('next').onclick = function(){ show(i+1); };
+  document.getElementById('prev').onclick = function(){ show(i-1); };
   notesBtn.onclick = toggleNotes;
-
   show(parseInt(location.hash.slice(1), 10) - 1 || 0);
 </script>
 </body>
