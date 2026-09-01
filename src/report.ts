@@ -17,7 +17,7 @@ export function printSummary(
   const out: string[] = [
     "",
     "═".repeat(72),
-    "🏁  a11yFixer finished",
+    "🏁  ship-tickets finished",
     "═".repeat(72),
     "",
     `📋  Parent: ${parentKey}   ·   ${discovered} subtask(s) labelled \`${readyLabel}\``,

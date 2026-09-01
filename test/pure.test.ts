@@ -147,7 +147,7 @@ test("findSkill locates the implement skill this machine will actually run", asy
 });
 
 test("readSkillBody strips frontmatter and keeps the instructions verbatim", async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "a11yfixer-skill-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "ship-tickets-skill-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, "SKILL.md");
   const body = "Implement the work.\n\nUse /tdd where possible, at pre-agreed seams.\n\n---\n\nCommit your work.";

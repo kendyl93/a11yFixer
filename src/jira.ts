@@ -350,7 +350,7 @@ export function describeClaim(c: Claim): string {
 /**
  * Phase 3: assign the subtask to the authenticated user and move it to the project's
  * in-progress state, immediately before implementation starts.
- * This is the only Jira mutation a11yFixer performs, and it is never fatal.
+ * This is the only Jira mutation ship-tickets performs, and it is never fatal.
  */
 export async function claimSubtask(opts: {
   subtask: Subtask;

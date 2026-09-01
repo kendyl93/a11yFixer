@@ -1,8 +1,8 @@
-# a11yFixer
+# ship-tickets
 
 Discovery is yours. Implementation is the agent's.
 
-You decide what should be built and write it down. a11yFixer picks up the subtasks you marked,
+You decide what should be built and write it down. ship-tickets picks up the subtasks you marked,
 runs **your `implement` skill** against each one in an isolated agent, and opens a Draft PR.
 
 ## The contract
@@ -81,7 +81,7 @@ at itself, or at nothing is dropped, and a subtask the planner forgets is still 
 
 ## What it uses to implement
 
-Nothing of its own. At the moment the implementation phase starts, a11yFixer reads your skill file
+Nothing of its own. At the moment the implementation phase starts, ship-tickets reads your skill file
 and pastes its body into the prompt:
 
 ```
@@ -104,11 +104,11 @@ Three consequences worth knowing:
 - **The agent never looks a skill up.** It is handed the text, so there is no name to guess at and
   no lookup to resolve wrongly. Edit the skill, and the next run builds the new way — the text is
   read at runtime, never copied into this repository.
-- **No skill, no run.** If no `SKILL.md` resolves, a11yFixer refuses to start, before any worktree,
+- **No skill, no run.** If no `SKILL.md` resolves, ship-tickets refuses to start, before any worktree,
   branch or Jira write. A second check catches it disappearing mid-run.
   ```
-  ❌  a11yFixer: the `implement` skill is not installed.
-    a11yFixer does not implement anything itself — it runs that skill.
+  ❌  ship-tickets: the `implement` skill is not installed.
+    ship-tickets does not implement anything itself — it runs that skill.
     Install it from https://github.com/mattpocock/skills, or drop a SKILL.md at
     ~/.claude/skills/implement/SKILL.md
   ```
@@ -128,7 +128,7 @@ Three consequences worth knowing:
 
 ```sh
 npm install
-npm run a11y-fixer -- https://you.atlassian.net/browse/RAD-85350 --repo ~/path/to/repo --dry-run
+npm run ship-tickets -- https://you.atlassian.net/browse/RAD-85350 --repo ~/path/to/repo --dry-run
 ```
 
 | flag | meaning |
@@ -174,7 +174,7 @@ const implementPrompt = await renderPrompt("implement.md", {
 The agent never sees `{{…}}`. Prompts total ~500 words: they say what the job is and defer to
 `AGENTS.md` for how. Anything the repository already documents was deleted.
 
-**Run output** — `$TMPDIR/a11y-fixer/<repo>-<PARENT>-<timestamp>/<JIRA-KEY>/`:
+**Run output** — `$TMPDIR/ship-tickets/<repo>-<PARENT>-<timestamp>/<JIRA-KEY>/`:
 
 | file | what it answers |
 | --- | --- |
@@ -201,4 +201,4 @@ Worktrees are never deleted, including on failure. Clean up with `git -C <repo> 
 - One Jira write, ever: assign + move to In Progress, on the subtask being implemented. Never on
   the parent, never to Done. Failure there is a warning, not a stop.
 - Subtasks run sequentially, and stacked ones must be merged in order. Nothing is ever merged
-  by a11yFixer.
+  by ship-tickets.

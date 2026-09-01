@@ -12,7 +12,7 @@ export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * The skill that does the engineering. `prompts/implement.md` invokes it as a slash command, so
  * this name is resolved by the claude CLI against the installed skills — install it from
- * https://github.com/mattpocock/skills and a11yFixer builds things the way that skill says.
+ * https://github.com/mattpocock/skills and ship-tickets builds things the way that skill says.
  */
 export const IMPLEMENT_SKILL = "implement";
 

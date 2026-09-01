@@ -12,7 +12,7 @@ import { execShell } from "../src/proc.js";
  * never calls Jira or Claude, never pushes, and never creates a pull request.
  */
 test("isolated worktrees all branch from the same BASE_SHA", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "a11yfixer-smoke-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "ship-tickets-smoke-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const repo = path.join(root, "repo");
@@ -71,7 +71,7 @@ test("isolated worktrees all branch from the same BASE_SHA", async (t) => {
  * contains the earlier work — but its own diff and PR still show only its own change.
  */
 test("a stacked worktree contains the earlier subtask's work but not its diff", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "a11yfixer-stack-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "ship-tickets-stack-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const repo = path.join(root, "repo");

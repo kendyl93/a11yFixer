@@ -59,7 +59,7 @@ export function parseArgs(argv: string[]): Args {
           `  Received: ${argv.map((x) => JSON.stringify(x)).join(" ")}\n` +
           "  If you pasted a multi-line command, your shell prompt decoration may have been\n" +
           "  pasted with it. Try the single-line form:\n" +
-          "    npm run a11y-fixer -- <jira-url> --repo <path> --dry-run",
+          "    npm run ship-tickets -- <jira-url> --repo <path> --dry-run",
       );
     }
   }
@@ -100,7 +100,7 @@ async function validate(args: Args): Promise<string> {
   if (!(await findSkill(IMPLEMENT_SKILL, repo))) {
     throw new Error(
       `the \`${IMPLEMENT_SKILL}\` skill is not installed.\n` +
-        "  a11yFixer does not implement anything itself — it runs that skill.\n" +
+        "  ship-tickets does not implement anything itself — it runs that skill.\n" +
         "  Install it from https://github.com/mattpocock/skills, or drop a SKILL.md at\n" +
         `  ~/.claude/skills/${IMPLEMENT_SKILL}/SKILL.md`,
     );
@@ -124,14 +124,14 @@ async function main(): Promise<void> {
 
   const runDir = path.join(
     os.tmpdir(),
-    "a11y-fixer",
+    "ship-tickets",
     `${path.basename(repo)}-${parentKey}-${new Date().toISOString().replace(/[:.]/g, "-")}`,
   );
   await mkdir(runDir, { recursive: true });
 
   console.log("");
   console.log("═".repeat(72));
-  console.log(`🔧  a11yFixer${args.dryRun ? "   (dry run — no code, no Jira changes, no PRs)" : ""}`);
+  console.log(`🔧  ship-tickets${args.dryRun ? "   (dry run — no code, no Jira changes, no PRs)" : ""}`);
   console.log("═".repeat(72));
   console.log(`    repo        ${repo}`);
   console.log(`    base        ${baseBranch} @ ${baseSha.slice(0, 10)}`);
@@ -157,7 +157,7 @@ async function main(): Promise<void> {
   } catch (err) {
     spSurvey.stop("❌", `could not read ${parentKey} from Jira`);
     console.log("");
-    console.log("   Jira MCP must be reachable before a11yFixer can do anything useful.");
+    console.log("   Jira MCP must be reachable before ship-tickets can do anything useful.");
     console.log("   Check `claude mcp list` shows your Atlassian server as Connected, and that");
     console.log(`   ${parentKey} exists and is visible to your account.`);
     console.log("   If your Jira MCP server is named differently, pass --jira-tool <mcp__server__getJiraIssue>.");
@@ -329,7 +329,7 @@ const invokedDirectly = process.argv[1] && import.meta.url === `file://${path.re
 if (invokedDirectly) {
   main().catch((err: Error) => {
     stopSpinner();
-    console.error(`\n❌  a11yFixer: ${err.message}`);
+    console.error(`\n❌  ship-tickets: ${err.message}`);
     process.exit(1);
   });
 }
