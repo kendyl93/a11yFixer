@@ -1,5 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 import { exec } from "./proc.js";
 import { parseUsage, type Usage } from "./usage.js";
@@ -7,6 +8,44 @@ import { parseUsage, type Usage } from "./usage.js";
 const PROMPTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "prompts");
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * The skill that does the engineering. `prompts/implement.md` invokes it as a slash command, so
+ * this name is resolved by the claude CLI against the installed skills — install it from
+ * https://github.com/mattpocock/skills and a11yFixer builds things the way that skill says.
+ */
+export const IMPLEMENT_SKILL = "implement";
+
+/**
+ * Prove the skill exists before the run starts.
+ *
+ * `claude -p "/implement …"` with no such skill installed is NOT an error: it returns
+ * subtype "success", zero turns and the text "Unknown command: /implement". A subtask would then
+ * be claimed in Jira, get a branch, and fail much later as "produced no changes" — the exact
+ * silent degradation this harness exists to prevent.
+ */
+export async function findSkill(name: string, repo: string): Promise<string | null> {
+  const home = os.homedir();
+  const direct = [
+    path.join(home, ".claude", "skills", name, "SKILL.md"),
+    path.join(repo, ".claude", "skills", name, "SKILL.md"),
+  ];
+  for (const candidate of direct) {
+    if (await stat(candidate).catch(() => null)) return candidate;
+  }
+  // Plugin-provided skills live under the plugin cache, one tree per marketplace and version.
+  const found = await exec(
+    "/bin/sh",
+    ["-c", `ls -d "$HOME"/.claude/plugins/*/*/*/*/skills/${name}/SKILL.md 2>/dev/null | head -1`],
+    { timeoutMs: 10_000 },
+  );
+  return found.stdout.trim() || null;
+}
+
+/** An unknown slash command comes back as a successful no-op, so it is detected by its text. */
+export function isUnknownCommand(text: string): boolean {
+  return /^Unknown command: \//.test(text.trim());
+}
 
 /** /implement runs tests, a typecheck and a self-review, so it needs a much longer leash. */
 export const IMPLEMENT_TIMEOUT_MS = 90 * 60 * 1000;

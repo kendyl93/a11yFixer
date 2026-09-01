@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { renderPrompt, runClaude, READ_ONLY_TOOLS, IMPLEMENT_TIMEOUT_MS } from "./claude.js";
+import { renderPrompt, runClaude, isUnknownCommand, IMPLEMENT_SKILL, IMPLEMENT_TIMEOUT_MS, READ_ONLY_TOOLS } from "./claude.js";
 import * as git from "./git.js";
 import { claimSubtask, describeClaim, fetchHandoff, HANDOFF_MARKER } from "./jira.js";
 import { createDraftPr } from "./github.js";
@@ -178,6 +178,11 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask, readyLabel: 
   spImpl.stop("🛠️ ", `/implement finished in ${formatDuration(Date.now() - implStarted)}`);
   account(impl.usage);
   await writeFile(path.join(artifacts, "implement.json"), impl.raw);
+
+  // The skill was there at startup; if it vanished mid-run the session is a successful no-op.
+  if (isUnknownCommand(impl.text)) {
+    return fail(`the \`${IMPLEMENT_SKILL}\` skill did not resolve: ${impl.text.trim()}`, branchName);
+  }
 
   await git.stageAll(worktree);
   const files = await git.changedFiles(worktree, ctx.baseSha);

@@ -9,7 +9,7 @@ import {
 } from "../src/jira.js";
 import { formatDuration } from "../src/spinner.js";
 import { parseUsage, addUsage, emptyUsage, contextPercent, formatTokens, formatUsd, shortModel } from "../src/usage.js";
-import { extractJson } from "../src/claude.js";
+import { extractJson, findSkill, isUnknownCommand, IMPLEMENT_SKILL } from "../src/claude.js";
 
 test("parseArgs reads the parent URL and --repo, and defaults the ready label", () => {
   const a = parseArgs(["https://x.atlassian.net/browse/RAD-85350", "--repo", "/tmp/r"]);
@@ -130,6 +130,22 @@ test("the implement prompt still begins with the /implement slash command", asyn
   // Reflow this file and the skill silently stops running.
   assert.match(prompt, /^\/implement /);
   assert.match(prompt, /\{\{HANDOFF_PATH\}\}/);
+});
+
+test("an unknown slash command is detected, because claude reports it as a success", () => {
+  // Real payload: {"is_error":false,"subtype":"success","num_turns":0,
+  //                "result":"Unknown command: /implementt. Did you mean /implement?"}
+  assert.equal(isUnknownCommand("Unknown command: /implementt. Did you mean /implement?"), true);
+  assert.equal(isUnknownCommand("  Unknown command: /implement"), true);
+  assert.equal(isUnknownCommand("I implemented the accessible names. Unknown command: /x"), false);
+  assert.equal(isUnknownCommand(""), false);
+});
+
+test("findSkill locates the implement skill this machine will actually run", async () => {
+  const found = await findSkill(IMPLEMENT_SKILL, process.cwd());
+  // The preflight must find a real SKILL.md, or refuse to start the run.
+  assert.ok(found === null || found.endsWith(`skills/${IMPLEMENT_SKILL}/SKILL.md`));
+  assert.equal(await findSkill("definitely-not-a-skill-name", process.cwd()), null);
 });
 
 test("extractJson recovers JSON from fenced or prose output", () => {

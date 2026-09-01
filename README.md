@@ -79,9 +79,29 @@ branch. Change the skill, change how a11yFixer builds things. The harness adds o
 the skill cannot know about: which branch, which handoff, and that it must not push, open a PR or
 touch Jira.
 
-> The prompt in `prompts/implement.md` **must start with `/implement `** — `claude -p` only expands
-> a skill when the prompt begins with the command. A test enforces this, because reflowing that
-> file would otherwise silently downgrade the phase to an ordinary prompt.
+### Where the skill is named, and why it is checked
+
+Nowhere but the first line of `prompts/implement.md`. The claude CLI resolves `/implement` by name
+against your installed skills — `~/.claude/skills/implement/`, the target repo's
+`.claude/skills/`, or a plugin — so a11yFixer never needs to know where the skill came from.
+
+Two things guard that single point of contact, because its failure mode is silent. An unknown
+slash command is **not** an error:
+
+```json
+{"is_error": false, "subtype": "success", "num_turns": 0,
+ "result": "Unknown command: /implementt. Did you mean /implement?"}
+```
+
+Without a guard, a missing skill would claim your Jira ticket, run a zero-turn session, and fail
+much later as "produced no changes". So:
+
+- the run refuses to start unless a real `SKILL.md` is found, naming where to get one;
+- the implementation phase fails loudly if the command did not resolve after all.
+
+And `prompts/implement.md` **must start with `/implement `** — `claude -p` only expands a skill
+when the prompt begins with the command. A test enforces this, because reflowing that file would
+otherwise silently downgrade the phase to an ordinary prompt.
 
 ## What it does NOT do
 
@@ -159,7 +179,9 @@ what your handoff comment is for.
 
 - Node.js 20+
 - git
-- Claude Code CLI (`claude`) on your PATH, with an `implement` skill installed
+- Claude Code CLI (`claude`) on your PATH
+- The `implement` skill installed — from [mattpocock/skills](https://github.com/mattpocock/skills),
+  or your own `SKILL.md` at `~/.claude/skills/implement/SKILL.md`
 - A Claude subscription and `CLAUDE_CODE_OAUTH_TOKEN`
 - Jira MCP (Atlassian) configured in your Claude Code environment
 - GitHub CLI (`gh`), authenticated

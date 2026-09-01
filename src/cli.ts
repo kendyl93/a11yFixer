@@ -2,6 +2,7 @@ import { mkdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { commandExists } from "./proc.js";
+import { findSkill, IMPLEMENT_SKILL } from "./claude.js";
 import * as git from "./git.js";
 import { checkGh, defaultBranch } from "./github.js";
 import {
@@ -91,6 +92,15 @@ async function validate(args: Args): Promise<string> {
       "CLAUDE_CODE_OAUTH_TOKEN is not set.\n" +
         "  Run `claude setup-token`, then `export CLAUDE_CODE_OAUTH_TOKEN=\"...\"`.\n" +
         "  If this machine is already authenticated interactively, pass --allow-missing-token.",
+    );
+  }
+
+  if (!(await findSkill(IMPLEMENT_SKILL, repo))) {
+    throw new Error(
+      `the \`${IMPLEMENT_SKILL}\` skill is not installed.\n` +
+        "  a11yFixer does not implement anything itself — it runs that skill.\n" +
+        "  Install it from https://github.com/mattpocock/skills, or drop a SKILL.md at\n" +
+        `  ~/.claude/skills/${IMPLEMENT_SKILL}/SKILL.md`,
     );
   }
 
