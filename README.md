@@ -70,7 +70,8 @@ The implementation phase is not a bespoke prompt pretending to be an engineer. a
 verbatim, frontmatter stripped:
 
 ```
-Implement Jira subtask RAD-1001 by following this process, verbatim:
+Implement Jira subtask RAD-1001 by following this process, taken verbatim from the
+`implement` skill at /Users/you/.claude/skills/implement/SKILL.md:
 
 <process>
 Implement the work described by the user in the spec or tickets.

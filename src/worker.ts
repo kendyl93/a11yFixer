@@ -107,8 +107,6 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask, readyLabel: 
   const branchPrompt = await renderPrompt("branch-name.md", {
     SUBTASK_KEY: subtask.key,
     SUBTASK_SUMMARY: subtask.summary,
-    BASE_BRANCH: ctx.baseBranch,
-    HANDOFF_PATH: handoffPath,
   });
   const branchRes = await runClaude({
     prompt: branchPrompt,
@@ -167,6 +165,8 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask, readyLabel: 
   const implStarted = Date.now();
   const implementPrompt = await renderPrompt("implement.md", {
     IMPLEMENT_SKILL: await readSkillBody(skillPath),
+    IMPLEMENT_SKILL_NAME: IMPLEMENT_SKILL,
+    SKILL_PATH: skillPath,
     SUBTASK_KEY: subtask.key,
     SUBTASK_URL: subtask.url,
     BRANCH_NAME: branchName,
@@ -207,7 +207,6 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask, readyLabel: 
     BRANCH_NAME: branchName,
     DIFF_PATH: diffPath,
     HANDOFF_PATH: handoffPath,
-    CHANGED_FILES: files.join("\n"),
   });
   const prMeta = await runClaude({
     prompt: prPrompt,

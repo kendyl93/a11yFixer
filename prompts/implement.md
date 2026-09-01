@@ -1,4 +1,5 @@
-Implement Jira subtask {{SUBTASK_KEY}} by following this process, verbatim:
+Implement Jira subtask {{SUBTASK_KEY}} by following this process, taken verbatim from the
+`{{IMPLEMENT_SKILL_NAME}}` skill at {{SKILL_PATH}}:
 
 <process>
 {{IMPLEMENT_SKILL}}
