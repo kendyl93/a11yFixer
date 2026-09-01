@@ -20,25 +20,20 @@ export const HANDOFF_HEADING = /^[ \t]*#{1,6}[ \t]*handoff\b/im;
 const MIN_HANDOFF_CHARS = 200;
 
 /**
- * Claude Code defers MCP tools when many servers are configured, so a semantic ToolSearch
- * ("jira atlassian") can silently return nothing and an agent will wrongly conclude Jira is
- * unavailable. An exact `select:` query is deterministic. Every Jira-touching prompt gets this
- * block so no agent has to rediscover it.
+ * Claude Code defers MCP tools when many servers are configured, and a semantic ToolSearch
+ * ("jira atlassian") silently returns nothing — an agent then concludes Jira is unavailable and
+ * implements from the issue key. Only an exact `select:` query is reliable, so every Jira-touching
+ * prompt is handed one rather than left to search.
  */
 export function jiraAccessBlock(jiraTool: string, extraTools: string[] = []): string {
   const names = [jiraTool, ...extraTools.map((t) => jiraToolPrefix(jiraTool) + t)];
   return [
-    "## Jira access",
-    "",
-    "Jira MCP tools are configured but may be DEFERRED, meaning they will not appear in your tool",
-    "list until you load them. Load them with an exact select query — not a semantic search:",
+    "Jira MCP tools are deferred. Load them with an exact select query, verbatim:",
     "",
     `    ToolSearch({ query: "select:${names.join(",")}" })`,
     "",
-    "Semantic searches such as \"jira atlassian issue\" are unreliable in this environment and have",
-    "silently returned nothing. Never conclude that Jira is unavailable because a semantic search",
-    "failed. Try the exact select query above first, and if you need a different Jira tool, select it",
-    `by exact name using the same \`${jiraToolPrefix(jiraTool)}\` prefix.`,
+    "Semantic searches return nothing here. If you need another Jira tool, select it by exact name",
+    `with the same \`${jiraToolPrefix(jiraTool)}\` prefix.`,
   ].join("\n");
 }
 
@@ -70,16 +65,12 @@ export function jiraWriteSelectQuery(jiraTool: string): string {
 
 export function jiraWriteAccessBlock(jiraTool: string): string {
   return [
-    "## Loading the Jira write tools",
-    "",
-    "Jira write tools are DEFERRED. Load them all in ONE call with this exact query, verbatim:",
+    "Jira write tools are deferred. Load them all in ONE call, verbatim:",
     "",
     `    ToolSearch({ query: "${jiraWriteSelectQuery(jiraTool)}" })`,
     "",
-    "Keyword and semantic searches (\"+atlassian\", \"jira transitions\") return nothing in this",
-    "environment — only exact names resolve. If you skip the query above and search instead, you",
-    "will wrongly conclude that no write tools exist. If a name in that list does not resolve, drop",
-    "just that one and continue with the rest.",
+    "Only exact names resolve — keyword searches return nothing. If one name does not resolve, drop",
+    "just that one and continue.",
   ].join("\n");
 }
 
