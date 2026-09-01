@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "../src/cli.js";
 import {
-  parseJiraKey, parseSurvey, isAlreadyDone, hasLabel, parseClaim, describeClaim,
+  parseJiraKey, parseSurvey, isUnavailable, hasLabel, parseClaim, describeClaim, parsePlan,
   jiraAccessBlock, validateHandoff, DEFAULT_JIRA_TOOL, DEFAULT_READY_LABEL,
   HANDOFF_MARKER, jiraToolPrefix, jiraWriteSelectQuery,
 } from "../src/jira.js";
@@ -44,12 +44,17 @@ test("parseJiraKey handles browse URLs, query strings and bare keys", () => {
   assert.equal(parseJiraKey("https://x.atlassian.net/projects/RAD"), null);
 });
 
-test("isAlreadyDone only skips terminal statuses", () => {
-  assert.equal(isAlreadyDone("Done"), true);
-  assert.equal(isAlreadyDone("closed"), true);
-  assert.equal(isAlreadyDone("To Do"), false);
-  assert.equal(isAlreadyDone("In Progress"), false);
-  assert.equal(isAlreadyDone(null), false);
+test("isUnavailable skips work that has already started, not just finished work", () => {
+  for (const status of [
+    "In Progress", "in development", "Code Review", "In Review", "In Verification",
+    "QA", "Testing", "Done", "closed", "Resolved", "Cancelled",
+  ]) {
+    assert.equal(isUnavailable(status), true, status);
+  }
+  // Not started: these are the only candidates.
+  for (const status of ["To Do", "Backlog", "Open", "Ready", "Selected for Development", null]) {
+    assert.equal(isUnavailable(status), false, String(status));
+  }
 });
 
 const survey = {
@@ -149,6 +154,47 @@ test("readSkillBody strips frontmatter and keeps the instructions verbatim", asy
   await writeFile(file, `---\nname: implement\ndescription: "x"\ndisable-model-invocation: true\n---\n\n${body}\n`);
   // Verbatim: a `---` inside the body is not frontmatter and must survive.
   assert.equal(await readSkillBody(file), body);
+});
+
+const readyThree = ["RAD-1001", "RAD-1002", "RAD-1003"].map((key) => ({
+  key, url: `https://x/browse/${key}`, summary: key, status: "To Do", labels: ["ready-for-implementation"],
+}));
+
+test("parsePlan keeps the agent's order but fixes its bookkeeping", () => {
+  const plan = parsePlan({ order: [
+    { key: "rad-1002", dependsOn: null, reason: "shared primitive first" },
+    { key: "RAD-1001", dependsOn: "RAD-1002", reason: "consumes it" },
+    { key: "RAD-1003", dependsOn: null, reason: "" },
+  ] }, readyThree);
+  assert.deepEqual(plan.map((p) => p.key), ["RAD-1002", "RAD-1001", "RAD-1003"]);
+  assert.equal(plan[1]!.dependsOn, "RAD-1002");
+  assert.equal(plan[0]!.reason, "shared primitive first");
+});
+
+test("parsePlan never produces a branch stacked on nothing", () => {
+  // Forward reference: RAD-1003 has not been built yet when RAD-1001 runs.
+  const forward = parsePlan({ order: [
+    { key: "RAD-1001", dependsOn: "RAD-1003" },
+    { key: "RAD-1002", dependsOn: null },
+    { key: "RAD-1003", dependsOn: null },
+  ] }, readyThree);
+  assert.equal(forward[0]!.dependsOn, null);
+  // Self-reference, unknown key, and a subtask the agent invented are all discarded.
+  const junk = parsePlan({ order: [
+    { key: "RAD-1001", dependsOn: "RAD-1001" },
+    { key: "RAD-9999", dependsOn: null },
+    { key: "RAD-1001", dependsOn: null },
+  ] }, readyThree);
+  assert.equal(junk[0]!.dependsOn, null);
+  assert.deepEqual(junk.map((p) => p.key), ["RAD-1001", "RAD-1002", "RAD-1003"]);
+});
+
+test("parsePlan still builds everything when the agent returns junk", () => {
+  // A forgotten subtask is built unstacked rather than silently dropped.
+  const partial = parsePlan({ order: [{ key: "RAD-1003", dependsOn: null }] }, readyThree);
+  assert.deepEqual(partial.map((p) => p.key), ["RAD-1003", "RAD-1001", "RAD-1002"]);
+  assert.deepEqual(parsePlan(null, readyThree).map((p) => p.key), ["RAD-1001", "RAD-1002", "RAD-1003"]);
+  assert.deepEqual(parsePlan({ order: "nope" }, readyThree).map((p) => p.dependsOn), [null, null, null]);
 });
 
 test("extractJson recovers JSON from fenced or prose output", () => {

@@ -26,10 +26,11 @@ rather than guessing:
 
 ```
 parent Jira issue
-  └─ direct subtasks labelled `ready-for-implementation`
-       └─ for each, sequentially:
-            harness              ── git worktree pinned to BASE_SHA
-            fresh claude session ── fetch the `## Handoff` comment verbatim → file
+  └─ direct subtasks labelled `ready-for-implementation`, minus any already in flight
+       ├─ fresh claude session ── fetch each `## Handoff` comment verbatim → file
+       ├─ fresh claude session ── plan the order, and what stacks on what
+       └─ then for each, in that order:
+            harness              ── git worktree from its base (BASE_SHA, or what it stacks on)
             fresh claude session ── branch name from repo conventions
             harness              ── create branch
             fresh claude session ── claim Jira: assign to you + In Progress
@@ -43,7 +44,40 @@ only things crossing a boundary are files on disk. The agent writing your code h
 Jira's tool output, the parent epic, another subtask, or the branch-naming discussion — it reads
 one document, the one you wrote.
 
-All subtasks branch from the same frozen `BASE_SHA`, so the PRs are independent.
+## Order and stacking
+
+Handoffs are fetched and validated **before** anything is claimed or built, because the order
+depends on what they say. A planning session then reads them and returns the sequence, plus what
+each subtask must be built on top of — the handoff's own words if it names a dependency, otherwise
+whatever creates a shared primitive before the work that consumes it.
+
+Independent subtasks branch from the frozen `BASE_SHA` and their PRs target the base branch. A
+subtask that depends on another starts from **that branch's head**, and its PR targets that branch:
+
+```
+BASE_SHA
+ ├── a11y/RAD-1001   PR #1 → main
+ │    └── a11y/RAD-1002   PR #2 → a11y/RAD-1001    (contains RAD-1001's code)
+ └── a11y/RAD-1003   PR #3 → main
+```
+
+So dependent work genuinely builds on earlier work, and each PR still shows only its own diff —
+`git diff` is taken from that subtask's own base, not from `BASE_SHA`. The cost is a forced merge
+order: merge #1 before #2. If a subtask fails, everything stacked on it is skipped as *stranded*
+rather than quietly rebuilt from the base branch without the dependency it was planned to have.
+
+The harness owns this: a dependency the planner points at a subtask that has not been built yet,
+at itself, or at nothing is dropped, and a subtask the planner forgets is still built, unstacked.
+
+## Which subtasks are skipped
+
+- not labelled `ready-for-implementation`
+- labelled, but the status says someone is already on it — In Progress, In Development, Code
+  Review, In Review, In Verification, QA, Testing, Done, Closed, Resolved, Cancelled. Only
+  not-started work is a candidate; an unrecognised status is treated as available.
+- labelled and available, but carrying no `## Handoff` comment — that one is a **failure**, not a
+  skip
+- stranded behind a subtask that failed
 
 ## What it uses to implement
 
@@ -145,6 +179,7 @@ The agent never sees `{{…}}`. Prompts total ~500 words: they say what the job 
 | file | what it answers |
 | --- | --- |
 | `artifacts/<KEY>.handoff.md` | what the agent was told to build |
+| `artifacts/branch-name.json` | the branch convention it found, and where |
 | `artifacts/implement-prompt.md` | the exact prompt it got, skill text included |
 | `artifacts/diff.patch` | what it produced |
 | `artifacts/*.json` | raw response from each session, with token and cost data |
@@ -165,4 +200,5 @@ Worktrees are never deleted, including on failure. Clean up with `git -C <repo> 
   first agent actually used is threaded into all the others.
 - One Jira write, ever: assign + move to In Progress, on the subtask being implemented. Never on
   the parent, never to Done. Failure there is a warning, not a stop.
-- Subtasks run sequentially. Nothing is ever merged.
+- Subtasks run sequentially, and stacked ones must be merged in order. Nothing is ever merged
+  by a11yFixer.

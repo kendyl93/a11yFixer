@@ -87,3 +87,8 @@ export async function commitsSince(worktree: string, baseSha: string): Promise<n
   const out = await git(worktree, ["rev-list", "--count", `${baseSha}..HEAD`]);
   return Number.parseInt(out, 10) || 0;
 }
+
+/** Commit a branch currently points at. Used to stack one subtask's worktree on another's work. */
+export async function branchHeadSha(repo: string, branch: string): Promise<string> {
+  return git(repo, ["rev-parse", branch]);
+}

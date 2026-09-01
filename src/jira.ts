@@ -80,10 +80,16 @@ export function parseJiraKey(url: string): string | null {
   return m?.[1] ? m[1].toUpperCase() : null;
 }
 
-const DONE_STATUS = /^(done|closed|resolved|cancell?ed|won'?t do|duplicate)$/i;
+/**
+ * A subtask that is already moving is not the agent's to pick up: someone is on it, it is being
+ * reviewed or verified, or it is finished. Only work that has not started is a candidate, so the
+ * check is a deny-list — an unrecognised status is treated as available and the label decides.
+ */
+const UNAVAILABLE_STATUS =
+  /^(in progress|in development|in dev|started|code review|in review|review|peer review|in verification|verification|verifying|qa|in qa|testing|in test|done|closed|resolved|complete[d]?|cancell?ed|won'?t do|duplicate)$/i;
 
-export function isAlreadyDone(status: string | null): boolean {
-  return status !== null && DONE_STATUS.test(status.trim());
+export function isUnavailable(status: string | null): boolean {
+  return status !== null && UNAVAILABLE_STATUS.test(status.trim());
 }
 
 export function hasLabel(subtask: Subtask, label: string): boolean {
@@ -366,4 +372,83 @@ export async function claimSubtask(opts: {
     timeoutMs: 10 * 60 * 1000,
   });
   return { claim: parseClaim(res.structured), usage: res.usage };
+}
+
+// --- Phase 3: decide what gets built on top of what --------------------------
+
+const ORDER_SCHEMA = {
+  type: "object",
+  properties: {
+    order: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          key: { type: "string" },
+          dependsOn: { type: ["string", "null"] },
+          reason: { type: "string" },
+        },
+        required: ["key", "dependsOn"],
+      },
+    },
+  },
+  required: ["order"],
+} as const;
+
+export type PlanStep = { key: string; dependsOn: string | null; reason: string };
+
+/**
+ * Trust the agent for the judgement, not the bookkeeping: the plan is forced back into a
+ * permutation of the ready keys, and a dependency that does not appear earlier in the order is
+ * dropped rather than allowed to produce a worktree stacked on nothing.
+ */
+export function parsePlan(structured: unknown, ready: Subtask[]): PlanStep[] {
+  const d = (structured ?? {}) as Record<string, unknown>;
+  const raw = Array.isArray(d["order"]) ? d["order"] : [];
+  const byKey = new Map(ready.map((s) => [s.key.toUpperCase(), s]));
+  const steps: PlanStep[] = [];
+  const placed = new Set<string>();
+
+  for (const item of raw) {
+    if (!item || typeof item["key"] !== "string") continue;
+    const key = item["key"].toUpperCase();
+    if (!byKey.has(key) || placed.has(key)) continue;
+    const dep = typeof item["dependsOn"] === "string" ? item["dependsOn"].toUpperCase() : null;
+    placed.add(key);
+    steps.push({
+      key,
+      dependsOn: dep && placed.has(dep) && dep !== key ? dep : null,
+      reason: typeof item["reason"] === "string" ? item["reason"].trim() : "",
+    });
+  }
+  // Anything the agent forgot still gets built, unstacked, in Jira's order.
+  for (const s of ready) {
+    if (!placed.has(s.key)) steps.push({ key: s.key, dependsOn: null, reason: "" });
+  }
+  return steps;
+}
+
+/** A fresh context that reads only the handoffs, decides the order, and dies. */
+export async function planOrder(opts: {
+  ready: Subtask[];
+  handoffPaths: Map<string, string>;
+  cwd: string;
+  addDirs: string[];
+  model: string | null;
+}): Promise<{ plan: PlanStep[]; usage: Usage }> {
+  const prompt = await renderPrompt("order.md", {
+    SUBTASKS: opts.ready
+      .map((s) => `${s.key}  ${s.summary}\n  handoff: ${opts.handoffPaths.get(s.key) ?? "(none)"}`)
+      .join("\n\n"),
+  });
+  const res = await runClaude({
+    prompt,
+    cwd: opts.cwd,
+    disallowedTools: READ_ONLY_TOOLS,
+    addDirs: opts.addDirs,
+    jsonSchema: ORDER_SCHEMA,
+    model: opts.model,
+    timeoutMs: 15 * 60 * 1000,
+  });
+  return { plan: parsePlan(res.structured, opts.ready), usage: res.usage };
 }

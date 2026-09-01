@@ -12,6 +12,7 @@ export type Outcome =
   | {
       kind: "pr";
       subtask: Subtask;
+      base: Base;
       prUrl: string;
       branch: string;
       worktree: string;
@@ -31,6 +32,14 @@ export type Outcome =
       reason: string;
       usage?: Usage;
     };
+
+/** What one subtask's worktree and pull request are built on: BASE_SHA, or the subtask it stacks on. */
+export type Base = {
+  sha: string;
+  branch: string;
+  /** The subtask key this stacks on, or null when it starts from the run's base branch. */
+  dependsOn: string | null;
+};
 
 export type RunContext = {
   repoPath: string;

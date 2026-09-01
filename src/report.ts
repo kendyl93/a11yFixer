@@ -37,6 +37,7 @@ export function printSummary(
     for (const o of prs) {
       out.push(`    ${o.subtask.key}  ${o.subtask.summary}`);
       out.push(`      ${o.prUrl}`);
+      if (o.base.dependsOn) out.push(`      stacked on ${o.base.dependsOn} — merge that first (PR targets ${o.base.branch})`);
       out.push(`      ${formatUsageTotal(o.usage, "cost")}`, "");
     }
   }

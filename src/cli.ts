@@ -1,4 +1,4 @@
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { commandExists } from "./proc.js";
@@ -7,18 +7,20 @@ import * as git from "./git.js";
 import { checkGh, defaultBranch } from "./github.js";
 import {
   surveySubtasks,
-  isAlreadyDone,
+  fetchHandoff,
+  planOrder,
+  HANDOFF_MARKER,
+  isUnavailable,
   hasLabel,
   parseJiraKey,
   DEFAULT_JIRA_TOOL,
   DEFAULT_READY_LABEL,
-  HANDOFF_MARKER,
 } from "./jira.js";
 import { runSubtask } from "./worker.js";
 import { printSummary } from "./report.js";
 import { spin, stopSpinner } from "./spinner.js";
 import { addUsage, emptyUsage, formatUsage } from "./usage.js";
-import type { Outcome, RunContext } from "./types.js";
+import type { Base, Outcome, RunContext } from "./types.js";
 
 export type Args = {
   parentUrl: string;
@@ -137,6 +139,7 @@ async function main(): Promise<void> {
   console.log(`    run dir     ${runDir}`);
   console.log("");
   const runStarted = Date.now();
+  let handoffUsage = emptyUsage();
 
   // Phase 1: the only Jira read the run makes before it knows what to work on.
   // It doubles as the Jira connection check — if this fails, nothing else runs.
@@ -163,12 +166,13 @@ async function main(): Promise<void> {
   spSurvey.stop("🔍", `read ${parentKey} and its subtasks via ${survey.jiraTool}`);
   console.log(`      └ ${formatUsage(survey.usage)}`);
 
-  const ready = survey.subtasks.filter((s) => hasLabel(s, args.label));
+  const labelled = survey.subtasks.filter((s) => hasLabel(s, args.label));
+  const ready = labelled.filter((s) => !isUnavailable(s.status));
 
   console.log("");
   console.log(`📋  Parent: ${survey.parent.key}  ${survey.parent.summary}`);
   console.log("");
-  console.log(`    ${survey.subtasks.length} subtask(s), ${ready.length} labelled \`${args.label}\``);
+  console.log(`    ${survey.subtasks.length} subtask(s), ${labelled.length} labelled \`${args.label}\`, ${ready.length} available`);
   console.log("");
   for (const s of survey.subtasks) {
     const mark = hasLabel(s, args.label) ? "✅" : "  ";
@@ -199,14 +203,106 @@ async function main(): Promise<void> {
   };
 
   const outcomes: Outcome[] = [];
+  for (const s of labelled) {
+    if (!isUnavailable(s.status)) continue;
+    console.log(`\n⏭️   ${s.key}  skipped — status is ${s.status}, someone is already on it`);
+    outcomes.push({ kind: "skipped", subtask: s, reason: `status is ${s.status}` });
+  }
+
+  // Every handoff is read and validated BEFORE any Jira issue is claimed or any code is written,
+  // because the order they get built in depends on what they say.
+  const handoffPaths = new Map<string, string>();
+  const buildable: typeof ready = [];
   for (const subtask of ready) {
-    if (isAlreadyDone(subtask.status)) {
-      console.log(`\n⏭️   ${subtask.key}  skipped — status is ${subtask.status}`);
-      outcomes.push({ kind: "skipped", subtask, reason: `already ${subtask.status}` });
+    const artifacts = path.join(runDir, subtask.key, "artifacts");
+    await mkdir(artifacts, { recursive: true });
+    const handoffPath = path.join(artifacts, `${subtask.key}.handoff.md`);
+    const sp = spin("📖", `reading the ${HANDOFF_MARKER} comment on ${subtask.key}…`);
+    const { result, usage } = await fetchHandoff({
+      subtask,
+      readyLabel: args.label,
+      cwd: repo,
+      model: args.model,
+      jiraTool: survey.jiraTool,
+    });
+    handoffUsage = addUsage(handoffUsage, usage);
+    if (!result.ok) {
+      sp.stop("❌", `${subtask.key} — no usable handoff`);
+      const reason =
+        `handoff unusable: ${result.error}. ${subtask.key} is labelled \`${args.label}\` but carries no ` +
+        `\`${HANDOFF_MARKER}\` comment — refusing to implement from the ticket summary alone.`;
+      console.log(`      ${reason.split(".")[0]}.`);
+      outcomes.push({ kind: "failed", subtask, reason, branch: null, worktree: null, usage });
       continue;
     }
+    await writeFile(handoffPath, result.markdown);
+    sp.stop("📖", `${subtask.key} — handoff read, ${result.markdown.length} chars`);
+    handoffPaths.set(subtask.key, handoffPath);
+    buildable.push(subtask);
+  }
+  if (buildable.length) console.log(`      └ ${formatUsage(handoffUsage)}`);
+  if (buildable.length === 0) {
+    printSummary(survey.parent.key, args.label, ready.length, outcomes, addUsage(survey.usage, handoffUsage), Date.now() - runStarted);
+    return;
+  }
+
+  // One subtask needs no plan; more than one might stack.
+  let plan = buildable.map((s) => ({ key: s.key, dependsOn: null as string | null, reason: "" }));
+  let planUsage = emptyUsage();
+  if (buildable.length > 1) {
+    const spPlan = spin("🧮", "planning implementation order from the handoffs…");
+    const planned = await planOrder({
+      ready: buildable,
+      handoffPaths,
+      cwd: repo,
+      addDirs: [runDir],
+      model: args.model,
+    });
+    plan = planned.plan;
+    planUsage = planned.usage;
+    spPlan.stop("🧮", "implementation order planned");
+    console.log(`      └ ${formatUsage(planUsage)}`);
+  }
+
+  console.log("");
+  console.log("🧮  Order");
+  console.log("");
+  for (const [i, stepPlan] of plan.entries()) {
+    const on = stepPlan.dependsOn ? `  ⤷ stacked on ${stepPlan.dependsOn}` : "";
+    console.log(`    ${i + 1}. ${stepPlan.key}${on}`);
+    if (stepPlan.reason) console.log(`       ${stepPlan.reason}`);
+  }
+  console.log("");
+
+  const byKey = new Map(buildable.map((s) => [s.key, s]));
+  // What each completed subtask left behind for the next one to build on.
+  const built = new Map<string, { branch: string; sha: string }>();
+
+  for (const stepPlan of plan) {
+    const subtask = byKey.get(stepPlan.key);
+    if (!subtask) continue;
+
+    let base: Base = { sha: baseSha, branch: baseBranch, dependsOn: null };
+    if (stepPlan.dependsOn) {
+      const parent = built.get(stepPlan.dependsOn);
+      if (!parent) {
+        // Stacking is a chain: if the subtask underneath never produced a branch, this one has
+        // nothing to sit on, and building it from the base branch would silently drop the
+        // dependency the plan said it has.
+        const reason = `stranded — depends on ${stepPlan.dependsOn}, which produced no branch`;
+        console.log(`\n⏭️   ${subtask.key}  skipped — ${reason}`);
+        outcomes.push({ kind: "skipped", subtask, reason });
+        continue;
+      }
+      base = { sha: parent.sha, branch: parent.branch, dependsOn: stepPlan.dependsOn };
+    }
+
     try {
-      outcomes.push(await runSubtask(ctx, subtask, args.label));
+      const outcome = await runSubtask(ctx, subtask, handoffPaths.get(subtask.key) as string, base);
+      outcomes.push(outcome);
+      if (outcome.kind === "pr") {
+        built.set(subtask.key, { branch: outcome.branch, sha: await git.branchHeadSha(repo, outcome.branch) });
+      }
     } catch (err) {
       // One failed subtask must not stop the rest of the run.
       stopSpinner();
@@ -224,7 +320,7 @@ async function main(): Promise<void> {
 
   const runUsage = outcomes.reduce(
     (total, o) => (o.usage ? addUsage(total, o.usage) : total),
-    addUsage(emptyUsage(), survey.usage),
+    addUsage(addUsage(addUsage(emptyUsage(), survey.usage), handoffUsage), planUsage),
   );
   printSummary(survey.parent.key, args.label, ready.length, outcomes, runUsage, Date.now() - runStarted);
 }
