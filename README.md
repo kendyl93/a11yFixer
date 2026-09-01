@@ -1,13 +1,5 @@
 # a11yFixer
 
-Experimental v0 harness. It exists to answer one question:
-
-> Is a parent Jira → isolated subtask agents → deterministic feedback → independent review →
-> small Draft PR workflow useful enough to continue investing in?
-
-Nothing here is a framework. There is no plugin system, no server, no database, no queue and no
-concurrency.
-
 ## What it does
 
 ```
