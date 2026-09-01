@@ -17,12 +17,11 @@ export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 export const IMPLEMENT_SKILL = "implement";
 
 /**
- * Prove the skill exists before the run starts.
+ * Locate the skill file whose text the implementation phase runs.
  *
- * `claude -p "/implement …"` with no such skill installed is NOT an error: it returns
- * subtype "success", zero turns and the text "Unknown command: /implement". A subtask would then
- * be claimed in Jira, get a branch, and fail much later as "produced no changes" — the exact
- * silent degradation this harness exists to prevent.
+ * Resolution mirrors the claude CLI: user skills, then the target repo's own, then plugins.
+ * The run refuses to start when this returns null, because an implementation phase with no
+ * process to follow would still look like a successful session.
  */
 export async function findSkill(name: string, repo: string): Promise<string | null> {
   const home = os.homedir();
@@ -42,9 +41,17 @@ export async function findSkill(name: string, repo: string): Promise<string | nu
   return found.stdout.trim() || null;
 }
 
-/** An unknown slash command comes back as a successful no-op, so it is detected by its text. */
-export function isUnknownCommand(text: string): boolean {
-  return /^Unknown command: \//.test(text.trim());
+/**
+ * The skill's instructions, frontmatter stripped.
+ *
+ * The body is inlined verbatim into the implementation prompt rather than invoked as
+ * `/implement`, so what the agent runs is exactly the skill on disk at that moment — visible in
+ * the run's artifacts, and impossible to silently downgrade to an ordinary prompt.
+ */
+export async function readSkillBody(skillPath: string): Promise<string> {
+  const raw = await readFile(skillPath, "utf8");
+  const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+  return body.trim();
 }
 
 /** /implement runs tests, a typecheck and a self-review, so it needs a much longer leash. */

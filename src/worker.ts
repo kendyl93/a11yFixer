@@ -1,6 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { renderPrompt, runClaude, isUnknownCommand, IMPLEMENT_SKILL, IMPLEMENT_TIMEOUT_MS, READ_ONLY_TOOLS } from "./claude.js";
+import {
+  renderPrompt, runClaude, findSkill, readSkillBody,
+  IMPLEMENT_SKILL, IMPLEMENT_TIMEOUT_MS, READ_ONLY_TOOLS,
+} from "./claude.js";
 import * as git from "./git.js";
 import { claimSubtask, describeClaim, fetchHandoff, HANDOFF_MARKER } from "./jira.js";
 import { createDraftPr } from "./github.js";
@@ -156,10 +159,14 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask, readyLabel: 
     spClaim.stop("⚠️ ", `Jira — could not assign/transition: ${(err as Error).message.split("\n")[0]}`);
   }
 
-  // --- Step F: /implement, in a context that has seen nothing but the handoff ---
-  const spImpl = spin("🛠️ ", `/implement ${subtask.key} — tests, typecheck, self-review, commit…`);
+  // --- Step F: implement, in a context that has seen nothing but the handoff ---
+  // The skill is read here, not at startup, so the text that runs is the text on disk right now.
+  const skillPath = await findSkill(IMPLEMENT_SKILL, ctx.repoPath);
+  if (!skillPath) return fail(`the \`${IMPLEMENT_SKILL}\` skill is no longer installed`, branchName);
+  const spImpl = spin("🛠️ ", `${IMPLEMENT_SKILL} — tests, typecheck, self-review, commit…`);
   const implStarted = Date.now();
   const implementPrompt = await renderPrompt("implement.md", {
+    IMPLEMENT_SKILL: await readSkillBody(skillPath),
     SUBTASK_KEY: subtask.key,
     SUBTASK_URL: subtask.url,
     BRANCH_NAME: branchName,
@@ -175,18 +182,16 @@ export async function runSubtask(ctx: RunContext, subtask: Subtask, readyLabel: 
     model: ctx.model,
     timeoutMs: IMPLEMENT_TIMEOUT_MS,
   });
-  spImpl.stop("🛠️ ", `/implement finished in ${formatDuration(Date.now() - implStarted)}`);
+  spImpl.stop("🛠️ ", `${IMPLEMENT_SKILL} finished in ${formatDuration(Date.now() - implStarted)}`);
+  detail(`skill: ${skillPath}`);
   account(impl.usage);
   await writeFile(path.join(artifacts, "implement.json"), impl.raw);
-
-  // The skill was there at startup; if it vanished mid-run the session is a successful no-op.
-  if (isUnknownCommand(impl.text)) {
-    return fail(`the \`${IMPLEMENT_SKILL}\` skill did not resolve: ${impl.text.trim()}`, branchName);
-  }
+  // Exactly what the implementer was told, skill text included.
+  await writeFile(path.join(artifacts, "implement-prompt.md"), implementPrompt);
 
   await git.stageAll(worktree);
   const files = await git.changedFiles(worktree, ctx.baseSha);
-  if (files.length === 0) return fail("/implement produced no changes", branchName);
+  if (files.length === 0) return fail(`${IMPLEMENT_SKILL} produced no changes`, branchName);
   const commits = await git.commitsSince(worktree, ctx.baseSha);
   detail(`${files.length} file(s) changed · ${commits} commit(s) by the implementer`);
 

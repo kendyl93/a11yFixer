@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { parseArgs } from "../src/cli.js";
 import {
   parseJiraKey, parseSurvey, isAlreadyDone, hasLabel, parseClaim, describeClaim,
@@ -9,7 +11,7 @@ import {
 } from "../src/jira.js";
 import { formatDuration } from "../src/spinner.js";
 import { parseUsage, addUsage, emptyUsage, contextPercent, formatTokens, formatUsd, shortModel } from "../src/usage.js";
-import { extractJson, findSkill, isUnknownCommand, IMPLEMENT_SKILL } from "../src/claude.js";
+import { extractJson, findSkill, readSkillBody, IMPLEMENT_SKILL } from "../src/claude.js";
 
 test("parseArgs reads the parent URL and --repo, and defaults the ready label", () => {
   const a = parseArgs(["https://x.atlassian.net/browse/RAD-85350", "--repo", "/tmp/r"]);
@@ -124,21 +126,12 @@ test("validateHandoff demands the marker heading and real substance", () => {
   assert.equal(validateHandoff(null).ok, false);
 });
 
-test("the implement prompt still begins with the /implement slash command", async () => {
+test("the implement prompt inlines the skill body and the handoff path", async () => {
   const prompt = await readFile(new URL("../prompts/implement.md", import.meta.url), "utf8");
-  // Load-bearing: claude only expands a skill when the prompt STARTS with the command.
-  // Reflow this file and the skill silently stops running.
-  assert.match(prompt, /^\/implement /);
+  // Load-bearing: drop this placeholder and the phase silently becomes a prompt of our own
+  // invention rather than the skill the engineer maintains.
+  assert.match(prompt, /\{\{IMPLEMENT_SKILL\}\}/);
   assert.match(prompt, /\{\{HANDOFF_PATH\}\}/);
-});
-
-test("an unknown slash command is detected, because claude reports it as a success", () => {
-  // Real payload: {"is_error":false,"subtype":"success","num_turns":0,
-  //                "result":"Unknown command: /implementt. Did you mean /implement?"}
-  assert.equal(isUnknownCommand("Unknown command: /implementt. Did you mean /implement?"), true);
-  assert.equal(isUnknownCommand("  Unknown command: /implement"), true);
-  assert.equal(isUnknownCommand("I implemented the accessible names. Unknown command: /x"), false);
-  assert.equal(isUnknownCommand(""), false);
 });
 
 test("findSkill locates the implement skill this machine will actually run", async () => {
@@ -146,6 +139,16 @@ test("findSkill locates the implement skill this machine will actually run", asy
   // The preflight must find a real SKILL.md, or refuse to start the run.
   assert.ok(found === null || found.endsWith(`skills/${IMPLEMENT_SKILL}/SKILL.md`));
   assert.equal(await findSkill("definitely-not-a-skill-name", process.cwd()), null);
+});
+
+test("readSkillBody strips frontmatter and keeps the instructions verbatim", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "a11yfixer-skill-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "SKILL.md");
+  const body = "Implement the work.\n\nUse /tdd where possible, at pre-agreed seams.\n\n---\n\nCommit your work.";
+  await writeFile(file, `---\nname: implement\ndescription: "x"\ndisable-model-invocation: true\n---\n\n${body}\n`);
+  // Verbatim: a `---` inside the body is not frontmatter and must survive.
+  assert.equal(await readSkillBody(file), body);
 });
 
 test("extractJson recovers JSON from fenced or prose output", () => {

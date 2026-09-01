@@ -36,7 +36,7 @@ parent Jira issue
             fresh Claude session  ── branch name from this repo's conventions
             harness               ── create the branch
             fresh Claude session  ── claim Jira: assign to you + move to In Progress
-            fresh Claude session  ── /implement  (its own /tdd, typecheck, /code-review, commit)
+            fresh Claude session  ── your implement skill, inlined (/tdd, typecheck, /code-review, commit)
             fresh Claude session  ── PR title + body from this repo's conventions
             harness               ── git push + gh pr create --draft
 ```
@@ -63,45 +63,51 @@ starts empty and reads one document — the one you wrote.
 This is the property the whole design exists to protect. "One context ≈ one engineering task" only
 holds if nothing leaks in, and `ctx N%` in the output (below) is how you check that it held.
 
-## Implementation runs your `/implement` skill
+## Implementation runs your `implement` skill
 
-The implementation phase is not a bespoke prompt pretending to be an engineer. It is your own
-`/implement` skill, invoked as a real slash command:
+The implementation phase is not a bespoke prompt pretending to be an engineer. a11yFixer reads
+`~/.claude/skills/implement/SKILL.md` at the moment it runs and pastes the body into the prompt,
+verbatim, frontmatter stripped:
 
 ```
-/implement Jira subtask RAD-1001 in this repository, exactly as agreed in the handoff document below.
-…
+Implement Jira subtask RAD-1001 by following this process, verbatim:
+
+<process>
+Implement the work described by the user in the spec or tickets.
+
+Use /tdd where possible, at pre-agreed seams.
+
+Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+
+Once done, use /code-review to review the work.
+
+Commit your work to the current branch.
+</process>
+
+The work is specified by the handoff at /tmp/…/RAD-1001.handoff.md — …
 ```
 
-So implementation follows whatever `~/.claude/skills/implement/SKILL.md` says today — `/tdd` at
-agreed seams, regular typechecks, the full suite at the end, `/code-review`, then a commit on the
-branch. Change the skill, change how a11yFixer builds things. The harness adds only the boundaries
-the skill cannot know about: which branch, which handoff, and that it must not push, open a PR or
-touch Jira.
+Read at runtime rather than copied into this repository, so it is always the exact skill you
+maintain and there is no second copy to drift. Edit the skill, and a11yFixer builds things the new
+way on the next run. `/tdd` and `/code-review` are model-invocable skills, so the agent reaches
+them from that text exactly as it would in your own session.
+
+The harness adds only the boundaries the skill cannot know about: which branch, which handoff, and
+that it must not push, open a PR or touch Jira.
 
 ### Where the skill is named, and why it is checked
 
-Nowhere but the first line of `prompts/implement.md`. The claude CLI resolves `/implement` by name
-against your installed skills — `~/.claude/skills/implement/`, the target repo's
-`.claude/skills/`, or a plugin — so a11yFixer never needs to know where the skill came from.
+In `src/claude.ts`, as `IMPLEMENT_SKILL = "implement"`. Resolution mirrors the claude CLI —
+`~/.claude/skills/`, then the target repo's `.claude/skills/`, then plugins — so a11yFixer never
+needs to know where the skill came from, only that it is really there.
 
-Two things guard that single point of contact, because its failure mode is silent. An unknown
-slash command is **not** an error:
+The run refuses to start when no `SKILL.md` resolves, and the subtask fails if the skill disappears
+mid-run. Without that check, a missing skill would claim your Jira ticket, run a session with no
+process to follow, and look like an ordinary implementation.
 
-```json
-{"is_error": false, "subtype": "success", "num_turns": 0,
- "result": "Unknown command: /implementt. Did you mean /implement?"}
-```
-
-Without a guard, a missing skill would claim your Jira ticket, run a zero-turn session, and fail
-much later as "produced no changes". So:
-
-- the run refuses to start unless a real `SKILL.md` is found, naming where to get one;
-- the implementation phase fails loudly if the command did not resolve after all.
-
-And `prompts/implement.md` **must start with `/implement `** — `claude -p` only expands a skill
-when the prompt begins with the command. A test enforces this, because reflowing that file would
-otherwise silently downgrade the phase to an ordinary prompt.
+The exact prompt each implementer received — skill text included — is saved to
+`artifacts/implement-prompt.md`, so "what process did this PR actually follow" is a file you can
+open, not a thing you have to trust.
 
 ## What it does NOT do
 
@@ -265,8 +271,9 @@ Three things to read carefully:
 Each run creates `$TMPDIR/a11y-fixer/<repo>-<PARENT>-<timestamp>/<JIRA-KEY>/`:
 
 - `worktree/` — the isolated checkout and branch
-- `artifacts/` — `<KEY>.handoff.md` (the handoff every agent worked from), `diff.patch`, and the
-  raw JSON from each Claude session
+- `artifacts/` — `<KEY>.handoff.md` (the handoff every agent worked from),
+  `implement-prompt.md` (the exact prompt the implementer got, skill text included), `diff.patch`,
+  and the raw JSON from each Claude session
 
 `<KEY>.handoff.md` is the file to open when a PR looks wrong: it is exactly what the agent was
 told to build. If it matches what you wrote in Jira, the gap is in the handoff, not the agent.
