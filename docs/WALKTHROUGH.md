@@ -1,5 +1,9 @@
 # Execution walkthrough
 
+> **Stale as of the label-gated refactor.** This document describes the earlier pipeline
+> (agent-led discovery, harness-run verification, independent reviewer). The current
+> design is in [README.md](../README.md). Regenerate this before presenting it again.
+
 What actually happens, in order, from pressing Enter. Line numbers are real.
 
 ```

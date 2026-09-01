@@ -50,8 +50,11 @@ test("isolated worktrees all branch from the same BASE_SHA", async (t) => {
     assert.equal(await git.hasStagedChanges(wt), true);
     const msg = path.join(root, key, "msg.txt");
     await writeFile(msg, `fix(a11y): ${key}\n`);
+    assert.equal(await git.commitsSince(wt, baseSha), 0);
     await git.commit(wt, msg);
     assert.equal(await git.hasStagedChanges(wt), false);
+    // What the harness reports as "N commit(s) by the implementer".
+    assert.equal(await git.commitsSince(wt, baseSha), 1);
   }
 
   // RAD-1002 must not contain RAD-1001's change.

@@ -7,7 +7,8 @@ Branch: {{BRANCH_NAME}}
 The complete diff is at:
 {{DIFF_PATH}}
 
-{{JIRA_ACCESS}}
+The handoff the change was built from is at:
+{{HANDOFF_PATH}}
 
 Changed files:
 {{CHANGED_FILES}}
@@ -19,7 +20,7 @@ Changed files:
    message rules or commitlint config, `.github/pull_request_template.md` and any variants under
    `.github/PULL_REQUEST_TEMPLATE/`, and any documented Jira-linking convention.
 2. Read the diff so the text describes what genuinely changed.
-3. Read the Jira ticket file above if you need the issue's title or context. Do not modify Jira.
+3. Read the handoff document above for the intent behind the change. Do not modify Jira.
 
 ## Rules
 
@@ -34,11 +35,12 @@ Changed files:
   explicitly asks for one.
 - Write as an engineer describing a change, not as a tool describing itself.
 
-## Reviewer note
-
-{{MANUAL_REVIEW_NOTE}}
-
 ## Output
 
 Return the structured object with `commitMessage`, `prTitle` and `prBody`.
-The Pull Request will be created as a DRAFT by the harness. Do not attempt to create it yourself.
+
+The implementing agent has normally already committed its own work. `commitMessage` is a fallback
+used only if it left something uncommitted, so write it as a real commit message for this change.
+
+The Pull Request will be created as a DRAFT by the harness, and a human reviews it before anything
+merges. Do not attempt to create it yourself.

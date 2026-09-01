@@ -4,16 +4,25 @@ import path from "node:path";
 import { commandExists } from "./proc.js";
 import * as git from "./git.js";
 import { checkGh, defaultBranch } from "./github.js";
-import { discoverSubtasks, isAlreadyDone, parseJiraKey, checkJiraConnection, DEFAULT_JIRA_TOOL } from "./discovery.js";
+import {
+  surveySubtasks,
+  isAlreadyDone,
+  hasLabel,
+  parseJiraKey,
+  DEFAULT_JIRA_TOOL,
+  DEFAULT_READY_LABEL,
+  HANDOFF_MARKER,
+} from "./jira.js";
 import { runSubtask } from "./worker.js";
 import { printSummary } from "./report.js";
-import { spin, stopSpinner, formatDuration } from "./spinner.js";
+import { spin, stopSpinner } from "./spinner.js";
 import { addUsage, emptyUsage, formatUsage } from "./usage.js";
 import type { Outcome, RunContext } from "./types.js";
 
 export type Args = {
   parentUrl: string;
   repo: string;
+  label: string;
   model: string | null;
   dryRun: boolean;
   allowMissingToken: boolean;
@@ -23,6 +32,7 @@ export type Args = {
 export function parseArgs(argv: string[]): Args {
   let parentUrl = "";
   let repo = "";
+  let label = DEFAULT_READY_LABEL;
   let model: string | null = null;
   let dryRun = false;
   let allowMissingToken = false;
@@ -33,6 +43,7 @@ export function parseArgs(argv: string[]): Args {
     // A stray backslash or pasted shell decoration produces empty args; ignore rather than choke.
     if (a === "" || a === "\\") continue;
     if (a === "--repo") repo = (argv[++i] ?? "").trim();
+    else if (a === "--label") label = (argv[++i] ?? "").trim();
     else if (a === "--model") model = (argv[++i] ?? "").trim() || null;
     else if (a === "--dry-run") dryRun = true;
     else if (a === "--allow-missing-token") allowMissingToken = true;
@@ -53,12 +64,13 @@ export function parseArgs(argv: string[]): Args {
   if (!parentUrl) throw new Error("missing parent Jira URL");
   if (!parseJiraKey(parentUrl)) throw new Error(`could not parse a Jira issue key from: ${parentUrl}`);
   if (!repo) throw new Error("missing --repo <path to target repository>");
+  if (!label) throw new Error("--label must not be empty");
 
   if (jiraTool !== null && !/^mcp__\w+__\w+$/.test(jiraTool)) {
     throw new Error(`--jira-tool must be a full MCP tool name, e.g. ${DEFAULT_JIRA_TOOL}`);
   }
 
-  return { parentUrl, repo, model, dryRun, allowMissingToken, jiraTool };
+  return { parentUrl, repo, label, model, dryRun, allowMissingToken, jiraTool };
 }
 
 function expandHome(p: string): string {
@@ -111,76 +123,57 @@ async function main(): Promise<void> {
   console.log("═".repeat(72));
   console.log(`    repo        ${repo}`);
   console.log(`    base        ${baseBranch} @ ${baseSha.slice(0, 10)}`);
+  console.log(`    label       ${args.label}`);
   console.log(`    run dir     ${runDir}`);
   console.log("");
   const runStarted = Date.now();
 
-  // Step 0: prove the Jira connection before anything else, dry run included.
-  const spCheck = spin("🔑", "checking Jira connection…");
-  const { check, usage: checkUsage } = await checkJiraConnection({
-    parentUrl: args.parentUrl,
-    parentKey,
-    cwd: repo,
-    model: args.model,
-    jiraTool: args.jiraTool ?? DEFAULT_JIRA_TOOL,
-  });
-
-  if (!check.readOk) {
-    spCheck.stop("❌", "Jira connection FAILED — cannot read issues");
-    console.log(`      ${check.error ?? "the check could not fetch the parent issue"}`);
-    if (check.missingTools.length) console.log(`      tools that did not resolve: ${check.missingTools.join(", ")}`);
+  // Phase 1: the only Jira read the run makes before it knows what to work on.
+  // It doubles as the Jira connection check — if this fails, nothing else runs.
+  const spSurvey = spin("🔍", `looking for subtasks of ${parentKey} labelled \`${args.label}\`…`);
+  let survey;
+  try {
+    survey = await surveySubtasks({
+      parentUrl: args.parentUrl,
+      parentKey,
+      readyLabel: args.label,
+      cwd: repo,
+      model: args.model,
+      jiraTool: args.jiraTool ?? DEFAULT_JIRA_TOOL,
+    });
+  } catch (err) {
+    spSurvey.stop("❌", `could not read ${parentKey} from Jira`);
     console.log("");
     console.log("   Jira MCP must be reachable before a11yFixer can do anything useful.");
     console.log("   Check `claude mcp list` shows your Atlassian server as Connected, and that");
     console.log(`   ${parentKey} exists and is visible to your account.`);
-    console.log(`   If your Jira MCP server is named differently, pass --jira-tool <mcp__server__getJiraIssue>.`);
-    throw new Error("Jira connection check failed");
-  }
-
-  spCheck.stop("🔑", "Jira connection OK");
-  console.log(`      read   ✔  ${check.jiraTool}`);
-  console.log(`             ${parentKey} — ${check.parentSummary}`);
-  if (check.writeOk) {
-    console.log(`      write  ✔  ${check.displayName ?? check.accountId}`);
-    if (check.transitions.length) console.log(`             transitions: ${check.transitions.join(", ")}`);
-  } else {
-    console.log("      write  ✖  no Jira write tools — subtasks will NOT be assigned or moved to In Progress");
-    if (check.error) console.log(`             ${check.error}`);
-    if (check.missingTools.length) console.log(`             missing: ${check.missingTools.join(", ")}`);
-  }
-  console.log(`      └ ${formatUsage(checkUsage)}`);
-  console.log("");
-
-  const jiraTool = args.jiraTool ?? check.jiraTool;
-  const jiraAccount = check.writeOk ? { id: check.accountId as string, name: check.displayName } : null;
-
-  const spDiscover = spin("🔍", `Discovering direct subtasks of ${parentKey} via Jira MCP…`);
-  let discovery;
-  try {
-    discovery = await discoverSubtasks({
-      parentUrl: args.parentUrl,
-      parentKey,
-      cwd: repo,
-      model: args.model,
-      jiraTool,
-    });
-  } catch (err) {
-    spDiscover.stop("❌", `Discovery failed for ${parentKey}`);
+    console.log("   If your Jira MCP server is named differently, pass --jira-tool <mcp__server__getJiraIssue>.");
     throw err;
   }
-  spDiscover.stop("🔍", `Discovered direct subtasks of ${parentKey} via Jira MCP`);
-  console.log(`      └ ${formatUsage(discovery.usage)}`);
+  spSurvey.stop("🔍", `read ${parentKey} and its subtasks via ${survey.jiraTool}`);
+  console.log(`      └ ${formatUsage(survey.usage)}`);
+
+  const ready = survey.subtasks.filter((s) => hasLabel(s, args.label));
 
   console.log("");
-  console.log(`📋  Parent: ${discovery.parent.key}  ${discovery.parent.summary}`);
+  console.log(`📋  Parent: ${survey.parent.key}  ${survey.parent.summary}`);
   console.log("");
-  console.log(`    Direct subtasks discovered: ${discovery.subtasks.length}`);
+  console.log(`    ${survey.subtasks.length} subtask(s), ${ready.length} labelled \`${args.label}\``);
   console.log("");
-  for (const s of discovery.subtasks) {
-    console.log(`      ${s.key}  ${s.summary}${s.status ? `  [${s.status}]` : ""}`);
+  for (const s of survey.subtasks) {
+    const mark = hasLabel(s, args.label) ? "✅" : "  ";
+    console.log(`    ${mark}  ${s.key}  ${s.summary}${s.status ? `  [${s.status}]` : ""}`);
+    if (!hasLabel(s, args.label) && s.labels.length) console.log(`           labels: ${s.labels.join(", ")}`);
   }
   console.log("");
-  console.log("ℹ️   Linked Jira items are NOT implementation scope.");
+
+  if (ready.length === 0) {
+    console.log(`ℹ️   Nothing to do. Label a subtask \`${args.label}\` and paste your grilling output`);
+    console.log(`    into it as a comment under a \`${HANDOFF_MARKER}\` heading, then run this again.`);
+    return;
+  }
+
+  console.log(`ℹ️   Only labelled subtasks are implemented, and only from their \`${HANDOFF_MARKER}\` comment.`);
   if (!args.dryRun) {
     console.log("ℹ️   Each subtask is assigned to you and moved to In Progress right before its code is written.");
   }
@@ -192,19 +185,18 @@ async function main(): Promise<void> {
     runDir,
     model: args.model,
     dryRun: args.dryRun,
-    jiraTool,
-    jiraAccount,
+    jiraTool: survey.jiraTool,
   };
 
   const outcomes: Outcome[] = [];
-  for (const subtask of discovery.subtasks) {
+  for (const subtask of ready) {
     if (isAlreadyDone(subtask.status)) {
       console.log(`\n⏭️   ${subtask.key}  skipped — status is ${subtask.status}`);
       outcomes.push({ kind: "skipped", subtask, reason: `already ${subtask.status}` });
       continue;
     }
     try {
-      outcomes.push(await runSubtask(ctx, subtask));
+      outcomes.push(await runSubtask(ctx, subtask, args.label));
     } catch (err) {
       // One failed subtask must not stop the rest of the run.
       stopSpinner();
@@ -222,9 +214,9 @@ async function main(): Promise<void> {
 
   const runUsage = outcomes.reduce(
     (total, o) => (o.usage ? addUsage(total, o.usage) : total),
-    addUsage(addUsage(emptyUsage(), discovery.usage), checkUsage),
+    addUsage(emptyUsage(), survey.usage),
   );
-  printSummary(discovery.parent.key, discovery.subtasks.length, outcomes, runUsage, Date.now() - runStarted);
+  printSummary(survey.parent.key, args.label, ready.length, outcomes, runUsage, Date.now() - runStarted);
 }
 
 const invokedDirectly = process.argv[1] && import.meta.url === `file://${path.resolve(process.argv[1])}`;

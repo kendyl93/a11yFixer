@@ -1,34 +1,48 @@
-The branch `{{BRANCH_NAME}}` has been created for you in this worktree. You may now implement
-Jira subtask {{SUBTASK_KEY}}.
+/implement Jira subtask {{SUBTASK_KEY}} in this repository, exactly as agreed in the handoff document below.
 
-Re-read the Jira ticket file you were given before you start, and implement against what it
-actually says — every acceptance criterion in it, and nothing outside it.
+## The handoff IS the specification
 
-## How to work
+A human engineer already interrogated this work, made every design decision, and wrote the result
+up. That document is at:
 
-- Work ONLY on this Jira subtask.
-- Follow the repository instructions you discovered in the previous step. The repository is the
-  authority on conventions, architecture, testing and accessibility practice — not your own
-  habits and not this prompt.
-- Find the ROOT CAUSE. A scanner or ticket reports a DOM symptom; fix the component, pattern or
-  primitive that produces it, not just the reported node. If the same defect is produced by a
-  shared primitive that this subtask covers, fix it there.
-- Prefer repository-native patterns and existing abstractions over new ones.
-- For accessibility: prefer semantic HTML over ARIA. Reach for ARIA only when semantics cannot
-  express the behaviour. Do not add redundant roles, redundant labels, or `aria-*` attributes
-  that duplicate what the element already conveys.
-- Reuse design-system primitives where repository guidance indicates that is the right move.
-- Add regression coverage where this repository's testing strategy makes that appropriate, in
-  the style the repository already uses.
-- Keep the change as small as it reasonably can be.
+    {{HANDOFF_PATH}}
+
+Read it in full before you touch anything, and implement what it says — every point in it, and
+nothing outside it. It supersedes your own plan, your own instincts about the problem, and any
+description you may find on the Jira issue ({{SUBTASK_URL}}). Where the handoff is silent, the
+repository's own conventions decide; where they are silent too, keep the change small and obvious.
+
+If the handoff contradicts itself or is missing something you genuinely cannot proceed without,
+stop and say so plainly at the end of your turn. Do not invent the missing decision — a human
+made these decisions on purpose.
+
+## Your working environment
+
+- You are in a fresh git worktree, checked out at `{{BASE_SHA}}`, on branch `{{BRANCH_NAME}}`,
+  which was created for you. Stay on it.
+- Nothing has been installed or built here yet.
+- The repository is the authority on conventions, architecture, testing and accessibility
+  practice — not your habits and not this prompt. Read its `AGENTS.md` / `CLAUDE.md` /
+  `CONTRIBUTING.md` and follow their pointers before you write code.
+
+## Accessibility
+
+- Fix the ROOT CAUSE. A scanner reports a DOM symptom; fix the component, pattern or primitive
+  that produces it, not just the reported node — as far as, and no further than, the handoff says.
+- Prefer semantic HTML over ARIA. Reach for ARIA only when semantics cannot express the behaviour,
+  and never add roles or `aria-*` attributes that duplicate what the element already conveys.
+- Reuse this repository's design-system primitives where its guidance says that is the right move.
 
 ## Hard rules
 
 - Do NOT fix unrelated issues you notice along the way, however tempting.
-- Do NOT touch work belonging to linked or related Jira issues.
+- Do NOT weaken, skip, delete or `.skip` a test, disable a lint rule, or suppress a type error to
+  get to green. Fix the cause.
 - Do NOT modify Jira in any way.
-- Do NOT commit, push, tag, or open a pull request. The harness owns those side effects.
-- Do NOT declare the task globally "done". External deterministic verification runs after you
-  stop, followed by an independent review you will not see.
+- Do NOT push, tag, or open a pull request. Commit to `{{BRANCH_NAME}}` and stop there — the
+  harness pushes and opens a draft PR after you finish, and a human reviews it.
+- When you run `/code-review`, review against `{{BASE_SHA}}`, and act on what it finds before you
+  finish.
 
-When the implementation is finished, stop and briefly state what you changed and why.
+When you are done, state briefly what you changed and why, and flag anything a human reviewer
+must check by hand.

@@ -8,9 +8,15 @@ const PROMPTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** Tool policy per role. Built-in tools only; MCP tools stay reachable via ToolSearch. */
+/** /implement runs tests, a typecheck and a self-review, so it needs a much longer leash. */
+export const IMPLEMENT_TIMEOUT_MS = 90 * 60 * 1000;
+
+/**
+ * Denied to every phase except /implement. Built-in tools only; MCP tools stay reachable via
+ * ToolSearch. A phase that only reads Jira, reads the repo or writes PR text has no business
+ * running a shell or editing a file, and saying so is cheaper than hoping.
+ */
 export const READ_ONLY_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit"];
-export const EDIT_NO_SHELL_TOOLS = ["Bash", "NotebookEdit"];
 
 export type ClaudeCall = {
   /** Fully rendered prompt text. */

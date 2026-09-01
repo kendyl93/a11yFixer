@@ -1,10 +1,10 @@
 import type { Outcome } from "./types.js";
-import { verdictIcon } from "./worker.js";
 import { formatDuration } from "./spinner.js";
 import { contextPercent, formatTokens, formatUsageTotal, formatUsd, formatWindow, shortModel, type Usage } from "./usage.js";
 
 export function printSummary(
   parentKey: string,
+  readyLabel: string,
   discovered: number,
   outcomes: Outcome[],
   usage: Usage,
@@ -20,7 +20,7 @@ export function printSummary(
     "🏁  a11yFixer finished",
     "═".repeat(72),
     "",
-    `📋  Parent: ${parentKey}   ·   ${discovered} direct subtask(s)`,
+    `📋  Parent: ${parentKey}   ·   ${discovered} subtask(s) labelled \`${readyLabel}\``,
     "",
     `⏱   Wall clock: ${formatDuration(wallClockMs)}`,
     `📊  ${shortModel(usage.model)}   ·   ${usage.sessions} Claude sessions   ·   ` +
@@ -37,7 +37,6 @@ export function printSummary(
     for (const o of prs) {
       out.push(`    ${o.subtask.key}  ${o.subtask.summary}`);
       out.push(`      ${o.prUrl}`);
-      out.push(`      reviewer: ${verdictIcon(o.verdict)} ${o.verdict}`);
       out.push(`      ${formatUsageTotal(o.usage, "cost")}`, "");
     }
   }
@@ -59,8 +58,8 @@ export function printSummary(
 
   out.push(
     "",
-    "ℹ️   Linked Jira issues were not used as implementation scope.",
-    "ℹ️   Nothing was merged. Every PR is a draft.",
+    "ℹ️   Only the handoff comment on each subtask was used as implementation scope.",
+    "ℹ️   Nothing was merged. Every PR is a draft — you are the reviewer.",
     prs.length || failed.some((f) => f.branch)
       ? "ℹ️   Jira: subtasks that reached implementation were assigned to you and moved to In Progress."
       : "ℹ️   No Jira issues were modified.",

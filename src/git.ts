@@ -81,3 +81,9 @@ export async function defaultRemote(repo: string): Promise<string> {
 export async function pushBranch(worktree: string, remote: string, branch: string): Promise<void> {
   await git(worktree, ["push", "--set-upstream", remote, `${branch}:${branch}`]);
 }
+
+/** How many commits the implementation agent made on top of the base revision. */
+export async function commitsSince(worktree: string, baseSha: string): Promise<number> {
+  const out = await git(worktree, ["rev-list", "--count", `${baseSha}..HEAD`]);
+  return Number.parseInt(out, 10) || 0;
+}

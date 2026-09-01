@@ -9,7 +9,6 @@ Jira subtask: {{SUBTASK_URL}} ({{SUBTASK_KEY}})
 
 1. Run the exact ToolSearch query above, as your very first action.
 2. Resolve the CURRENT Atlassian user with the `atlassianUserInfo` tool. That account is "me".
-{{KNOWN_ACCOUNT}}
 3. Assign the subtask to that account.
 4. List the available transitions for the subtask and apply the one that means work has started —
    normally "In Progress", but use whatever this project's workflow actually calls its

@@ -3,17 +3,8 @@ export type Subtask = {
   url: string;
   summary: string;
   status: string | null;
+  labels: string[];
 };
-
-export type CommandResult = {
-  command: string;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-};
-
-export type Verdict = "PASS" | "FAIL" | "MANUAL_REVIEW_REQUIRED";
 
 import type { Usage } from "./usage.js";
 
@@ -21,7 +12,6 @@ export type Outcome =
   | {
       kind: "pr";
       subtask: Subtask;
-      verdict: Verdict;
       prUrl: string;
       branch: string;
       worktree: string;
@@ -33,7 +23,6 @@ export type Outcome =
       reason: string;
       branch: string | null;
       worktree: string | null;
-      verdict?: Verdict;
       usage?: Usage;
     }
   | {
@@ -51,5 +40,4 @@ export type RunContext = {
   model: string | null;
   dryRun: boolean;
   jiraTool: string;
-  jiraAccount: { id: string; name: string | null } | null;
 };
