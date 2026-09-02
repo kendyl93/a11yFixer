@@ -72,9 +72,11 @@ at itself, or at nothing is dropped, and a subtask the planner forgets is still 
 ## Which subtasks are skipped
 
 - not labelled `ready-for-implementation`
-- labelled, but the status says someone is already on it — In Progress, In Development, Code
-  Review, In Review, In Verification, QA, Testing, Done, Closed, Resolved, Cancelled. Only
-  not-started work is a candidate; an unrecognised status is treated as available.
+- labelled, but the status says the code is already written — Code Review, In Review, In
+  Verification, QA, Testing, Done, Closed, Resolved, Cancelled. In-progress statuses are *not*
+  skipped: a subtask someone has started is still a candidate, and ship-tickets sets that status
+  itself before writing code, so a re-run has to be able to pick its own claims back up. An
+  unrecognised status is treated as available.
 - labelled and available, but carrying no `## Handoff` comment — that one is a **failure**, not a
   skip
 - stranded behind a subtask that failed

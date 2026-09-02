@@ -205,7 +205,7 @@ async function main(): Promise<void> {
   const outcomes: Outcome[] = [];
   for (const s of labelled) {
     if (!isUnavailable(s.status)) continue;
-    console.log(`\n⏭️   ${s.key}  skipped — status is ${s.status}, someone is already on it`);
+    console.log(`\n⏭️   ${s.key}  skipped — status is ${s.status}, already past implementation`);
     outcomes.push({ kind: "skipped", subtask: s, reason: `status is ${s.status}` });
   }
 

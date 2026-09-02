@@ -81,12 +81,14 @@ export function parseJiraKey(url: string): string | null {
 }
 
 /**
- * A subtask that is already moving is not the agent's to pick up: someone is on it, it is being
- * reviewed or verified, or it is finished. Only work that has not started is a candidate, so the
- * check is a deny-list — an unrecognised status is treated as available and the label decides.
+ * A subtask whose code is already written is not the agent's to pick up: it is being reviewed or
+ * verified, or it is finished. In-progress states are NOT excluded — work someone has started is
+ * still a candidate, and ship-tickets moves a subtask to in-progress itself before writing its
+ * code, so excluding those would make a re-run skip its own claims. The check is a deny-list — an
+ * unrecognised status is treated as available and the label decides.
  */
 const UNAVAILABLE_STATUS =
-  /^(in progress|in development|in dev|started|code review|in review|review|peer review|in verification|verification|verifying|qa|in qa|testing|in test|done|closed|resolved|complete[d]?|cancell?ed|won'?t do|duplicate)$/i;
+  /^(code review|in review|review|peer review|in verification|verification|verifying|qa|in qa|testing|in test|done|closed|resolved|complete[d]?|cancell?ed|won'?t do|duplicate)$/i;
 
 export function isUnavailable(status: string | null): boolean {
   return status !== null && UNAVAILABLE_STATUS.test(status.trim());

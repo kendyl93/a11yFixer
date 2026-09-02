@@ -44,15 +44,19 @@ test("parseJiraKey handles browse URLs, query strings and bare keys", () => {
   assert.equal(parseJiraKey("https://x.atlassian.net/projects/RAD"), null);
 });
 
-test("isUnavailable skips work that has already started, not just finished work", () => {
+test("isUnavailable skips reviewed and finished work, but not in-progress work", () => {
   for (const status of [
-    "In Progress", "in development", "Code Review", "In Review", "In Verification",
+    "Code Review", "In Review", "In Verification",
     "QA", "Testing", "Done", "closed", "Resolved", "Cancelled",
   ]) {
     assert.equal(isUnavailable(status), true, status);
   }
-  // Not started: these are the only candidates.
-  for (const status of ["To Do", "Backlog", "Open", "Ready", "Selected for Development", null]) {
+  // Not started, or started but not yet reviewed: both are candidates. In-progress matters
+  // especially, because ship-tickets moves a subtask there itself before writing its code.
+  for (const status of [
+    "To Do", "Backlog", "Open", "Ready", "Selected for Development", null,
+    "In Progress", "in development", "In Dev", "Started",
+  ]) {
     assert.equal(isUnavailable(status), false, String(status));
   }
 });
