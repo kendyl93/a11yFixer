@@ -7,6 +7,7 @@ export type Subtask = {
 };
 
 import type { Usage } from "./usage.js";
+import type { JiraConfig, JiraUser } from "./jira-api.js";
 
 export type Outcome =
   | {
@@ -48,5 +49,8 @@ export type RunContext = {
   runDir: string;
   model: string | null;
   dryRun: boolean;
-  jiraTool: string;
+  /** Resolved once at startup, so no phase re-discovers how to reach Jira. */
+  jira: JiraConfig;
+  /** Who the Jira token belongs to — the account every subtask is assigned to. */
+  jiraUser: JiraUser;
 };

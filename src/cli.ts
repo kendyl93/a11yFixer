@@ -13,9 +13,10 @@ import {
   isUnavailable,
   hasLabel,
   parseJiraKey,
-  DEFAULT_JIRA_TOOL,
   DEFAULT_READY_LABEL,
 } from "./jira.js";
+import { resolveJiraConfig, whoAmI, type JiraConfig, type JiraUser } from "./jira-api.js";
+import { applySweep, describeSweep, findLeftovers, planSweep } from "./fresh.js";
 import { runSubtask } from "./worker.js";
 import { printSummary } from "./report.js";
 import { spin, stopSpinner } from "./spinner.js";
@@ -29,7 +30,10 @@ export type Args = {
   model: string | null;
   dryRun: boolean;
   allowMissingToken: boolean;
-  jiraTool: string | null;
+  /** Clear this parent's leftover branches and worktrees before running. */
+  fresh: boolean;
+  /** …including branches that carry commits. Implies `fresh`. */
+  freshForce: boolean;
 };
 
 export function parseArgs(argv: string[]): Args {
@@ -39,7 +43,8 @@ export function parseArgs(argv: string[]): Args {
   let model: string | null = null;
   let dryRun = false;
   let allowMissingToken = false;
-  let jiraTool: string | null = null;
+  let fresh = false;
+  let freshForce = false;
 
   for (let i = 0; i < argv.length; i++) {
     const a = (argv[i] as string).trim();
@@ -50,7 +55,9 @@ export function parseArgs(argv: string[]): Args {
     else if (a === "--model") model = (argv[++i] ?? "").trim() || null;
     else if (a === "--dry-run") dryRun = true;
     else if (a === "--allow-missing-token") allowMissingToken = true;
-    else if (a === "--jira-tool") jiraTool = (argv[++i] ?? "").trim();
+    else if (a === "--fresh") fresh = true;
+    // --fresh-force is the only way to destroy committed work, so it is spelled out in full.
+    else if (a === "--fresh-force") { fresh = true; freshForce = true; }
     else if (a.startsWith("--")) throw new Error(`unknown flag: ${a}`);
     else if (!parentUrl) parentUrl = a;
     else {
@@ -69,18 +76,21 @@ export function parseArgs(argv: string[]): Args {
   if (!repo) throw new Error("missing --repo <path to target repository>");
   if (!label) throw new Error("--label must not be empty");
 
-  if (jiraTool !== null && !/^mcp__\w+__\w+$/.test(jiraTool)) {
-    throw new Error(`--jira-tool must be a full MCP tool name, e.g. ${DEFAULT_JIRA_TOOL}`);
-  }
-
-  return { parentUrl, repo, label, model, dryRun, allowMissingToken, jiraTool };
+  return { parentUrl, repo, label, model, dryRun, allowMissingToken, fresh, freshForce };
 }
 
 function expandHome(p: string): string {
   return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
 }
 
-async function validate(args: Args): Promise<string> {
+/**
+ * Everything that can be checked cheaply, checked before a single agent session is spawned.
+ *
+ * Jira belongs here now that it is plain HTTP: `whoAmI` proves the site, the email and the token
+ * all agree in one request, so a credential problem costs a second instead of surfacing after
+ * minutes of paid work.
+ */
+async function validate(args: Args): Promise<{ repo: string; cfg: JiraConfig; user: JiraUser }> {
   const repo = path.resolve(expandHome(args.repo));
 
   const dir = await stat(repo).catch(() => null);
@@ -109,12 +119,23 @@ async function validate(args: Args): Promise<string> {
   const ghError = await checkGh();
   if (ghError) throw new Error(ghError);
 
-  return repo;
+  const cfg = await resolveJiraConfig({ parentUrl: args.parentUrl, repo });
+  let user: JiraUser;
+  try {
+    user = await whoAmI(cfg);
+  } catch (err) {
+    throw new Error(
+      `${(err as Error).message}\n` +
+        `  Jira site:  ${cfg.baseUrl}\n` +
+        `  Jira email: ${cfg.email}`,
+    );
+  }
+  return { repo, cfg, user };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const repo = await validate(args);
+  const { repo, cfg, user } = await validate(args);
   const parentKey = parseJiraKey(args.parentUrl) as string;
 
   // Freeze the base revision. Every subtask branch starts from exactly this commit.
@@ -136,35 +157,18 @@ async function main(): Promise<void> {
   console.log(`    repo        ${repo}`);
   console.log(`    base        ${baseBranch} @ ${baseSha.slice(0, 10)}`);
   console.log(`    label       ${args.label}`);
+  console.log(`    jira        ${cfg.baseUrl}  as ${user.displayName || user.email}`);
   console.log(`    run dir     ${runDir}`);
   console.log("");
   const runStarted = Date.now();
-  let handoffUsage = emptyUsage();
 
-  // Phase 1: the only Jira read the run makes before it knows what to work on.
-  // It doubles as the Jira connection check — if this fails, nothing else runs.
+  // Phase 1: two REST calls. Retried internally, so a transient Jira fault costs a second.
   const spSurvey = spin("🔍", `looking for subtasks of ${parentKey} labelled \`${args.label}\`…`);
-  let survey;
-  try {
-    survey = await surveySubtasks({
-      parentUrl: args.parentUrl,
-      parentKey,
-      readyLabel: args.label,
-      cwd: repo,
-      model: args.model,
-      jiraTool: args.jiraTool ?? DEFAULT_JIRA_TOOL,
-    });
-  } catch (err) {
+  const survey = await surveySubtasks({ cfg, parentKey }).catch((err: Error) => {
     spSurvey.stop("❌", `could not read ${parentKey} from Jira`);
-    console.log("");
-    console.log("   Jira MCP must be reachable before ship-tickets can do anything useful.");
-    console.log("   Check `claude mcp list` shows your Atlassian server as Connected, and that");
-    console.log(`   ${parentKey} exists and is visible to your account.`);
-    console.log("   If your Jira MCP server is named differently, pass --jira-tool <mcp__server__getJiraIssue>.");
     throw err;
-  }
-  spSurvey.stop("🔍", `read ${parentKey} and its subtasks via ${survey.jiraTool}`);
-  console.log(`      └ ${formatUsage(survey.usage)}`);
+  });
+  spSurvey.stop("🔍", `read ${parentKey} and its ${survey.subtasks.length} subtask(s) from Jira`);
 
   const labelled = survey.subtasks.filter((s) => hasLabel(s, args.label));
   const ready = labelled.filter((s) => !isUnavailable(s.status));
@@ -192,6 +196,35 @@ async function main(): Promise<void> {
     console.log("ℹ️   Each subtask is assigned to you and moved to In Progress right before its code is written.");
   }
 
+  // --fresh: clear this parent's leftovers before anything is spent. Runs after the survey,
+  // because the subtask keys are what identify the debris, and before any agent, because a
+  // collision the sweep would have fixed must never cost a session.
+  if (args.fresh) {
+    const leftovers = await findLeftovers(repo, ready.map((s) => s.key), baseSha);
+    const plan = planSweep(leftovers);
+    const lines = describeSweep(plan, { force: args.freshForce, dryRun: args.dryRun });
+    console.log("");
+    if (lines.length === 0) {
+      console.log("🧹  --fresh: nothing left over for these subtasks");
+    } else {
+      console.log(`🧹  --fresh${args.freshForce ? "-force" : ""}`);
+      console.log("");
+      for (const line of lines) console.log(`    ${line}`);
+      if (!args.dryRun) {
+        const swept = await applySweep(repo, plan, { force: args.freshForce });
+        console.log("");
+        console.log(
+          `    removed ${swept.removedBranches.length} branch(es), ` +
+            `${swept.removedWorktrees.length} worktree(s)` +
+            (swept.keptBranches.length ? `, kept ${swept.keptBranches.length} carrying work` : ""),
+        );
+        // A sweep that half-worked must not read as a clean slate.
+        for (const err of swept.errors) console.log(`    ⚠️  ${err}`);
+      }
+    }
+    console.log("");
+  }
+
   const ctx: RunContext = {
     repoPath: repo,
     baseSha,
@@ -199,7 +232,8 @@ async function main(): Promise<void> {
     runDir,
     model: args.model,
     dryRun: args.dryRun,
-    jiraTool: survey.jiraTool,
+    jira: cfg,
+    jiraUser: user,
   };
 
   const outcomes: Outcome[] = [];
@@ -218,31 +252,25 @@ async function main(): Promise<void> {
     await mkdir(artifacts, { recursive: true });
     const handoffPath = path.join(artifacts, `${subtask.key}.handoff.md`);
     const sp = spin("📖", `reading the ${HANDOFF_MARKER} comment on ${subtask.key}…`);
-    const { result, usage } = await fetchHandoff({
-      subtask,
-      readyLabel: args.label,
-      cwd: repo,
-      model: args.model,
-      jiraTool: survey.jiraTool,
-    });
-    handoffUsage = addUsage(handoffUsage, usage);
+    const result = await fetchHandoff({ cfg, subtask }).catch(
+      (err: Error) => ({ ok: false as const, error: err.message }),
+    );
     if (!result.ok) {
       sp.stop("❌", `${subtask.key} — no usable handoff`);
       const reason =
         `handoff unusable: ${result.error}. ${subtask.key} is labelled \`${args.label}\` but carries no ` +
         `\`${HANDOFF_MARKER}\` comment — refusing to implement from the ticket summary alone.`;
       console.log(`      ${reason.split(".")[0]}.`);
-      outcomes.push({ kind: "failed", subtask, reason, branch: null, worktree: null, usage });
+      outcomes.push({ kind: "failed", subtask, reason, branch: null, worktree: null });
       continue;
     }
     await writeFile(handoffPath, result.markdown);
-    sp.stop("📖", `${subtask.key} — handoff read, ${result.markdown.length} chars`);
+    sp.stop("📖", `${subtask.key} — handoff read, ${result.markdown.length} chars, by ${result.author}`);
     handoffPaths.set(subtask.key, handoffPath);
     buildable.push(subtask);
   }
-  if (buildable.length) console.log(`      └ ${formatUsage(handoffUsage)}`);
   if (buildable.length === 0) {
-    printSummary(survey.parent.key, args.label, ready.length, outcomes, addUsage(survey.usage, handoffUsage), Date.now() - runStarted);
+    printSummary(survey.parent.key, args.label, ready.length, outcomes, emptyUsage(), Date.now() - runStarted);
     return;
   }
 
@@ -320,7 +348,8 @@ async function main(): Promise<void> {
 
   const runUsage = outcomes.reduce(
     (total, o) => (o.usage ? addUsage(total, o.usage) : total),
-    addUsage(addUsage(addUsage(emptyUsage(), survey.usage), handoffUsage), planUsage),
+    // The survey and the handoff reads are plain HTTP now and cost nothing to account for.
+    addUsage(emptyUsage(), planUsage),
   );
   printSummary(survey.parent.key, args.label, ready.length, outcomes, runUsage, Date.now() - runStarted);
 }

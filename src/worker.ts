@@ -72,13 +72,36 @@ export async function runSubtask(
   say(`    ${subtask.url}`);
   say("━".repeat(72));
 
-  const fail = (reason: string, branch: string | null): Outcome => {
+  // Set once step C has created the branch. Only a branch this run made is ours to remove.
+  let ownsBranch = false;
+
+  /**
+   * A failure must not poison the retry. Step C creates the subtask branch as a side effect, and
+   * the branch-name agent asks for the same name next time, so a branch left behind here makes
+   * every re-run of this subtask die at the pre-flight check in step B. Delete it — but only when
+   * it is ours and carries no commits, so real work is never thrown away.
+   */
+  const fail = async (reason: string, branch: string | null): Promise<Outcome> => {
     stopSpinner();
+    let leftover = branch;
+    if (branch && ownsBranch) {
+      try {
+        if ((await git.commitsAhead(ctx.repoPath, branch, base.sha)) === 0) {
+          // The worktree still has the branch checked out; git will not delete it until it lets go.
+          await git.detachWorktree(worktree, base.sha);
+          await git.deleteBranch(ctx.repoPath, branch);
+          leftover = null;
+        }
+      } catch {
+        // Best effort: a housekeeping hiccup must not mask the failure that got us here.
+      }
+    }
     step("❌", `${subtask.key} failed after ${formatDuration(Date.now() - started)}`);
     detail(reason.split("\n")[0] ?? reason);
+    if (branch && !leftover) detail(`branch ${branch} deleted — it had no commits, so re-running is safe`);
     detail(`worktree preserved: ${worktree}`);
     detail(`└ ${formatUsageTotal(usage, "subtask")}`);
-    return { kind: "failed", subtask, reason, branch, worktree, usage };
+    return { kind: "failed", subtask, reason, branch: leftover, worktree, usage };
   };
 
   // --- Step A: worktree, pinned to whatever this subtask builds on ---------
@@ -86,6 +109,10 @@ export async function runSubtask(
   detail(worktree);
   await git.addDetachedWorktree(ctx.repoPath, worktree, base.sha);
   detail(`handoff: ${handoffPath}`);
+  // The repo's own hooks must still run, and a repo-relative core.hooksPath does not survive the
+  // move into a worktree. Resolved once here, passed to every command that fires a hook.
+  const hooksPath = await git.absoluteHooksPath(ctx.repoPath);
+  if (hooksPath) detail(`hooks: ${hooksPath}`);
 
   // --- Step B: branch name from repository conventions (its own context) ----
   const spBranch = spin("🧭", "reading repository branch conventions…");
@@ -111,32 +138,47 @@ export async function runSubtask(
   if (!(await git.isValidBranchName(ctx.repoPath, branchName))) {
     return fail(`branch-name agent returned an invalid git branch name: ${branchName}`, null);
   }
+  // A name collision is usually this subtask's own debris: an earlier run created the branch and
+  // died before committing to it. Since the name is what the branch-name agent just paid to
+  // produce, an empty leftover is taken over rather than treated as fatal. A branch with commits
+  // on it is somebody's work and always stops the run.
   if (await git.branchExists(ctx.repoPath, branchName)) {
-    return fail(`branch already exists in the target repository: ${branchName}`, branchName);
+    const ahead = await git.commitsAhead(ctx.repoPath, branchName, base.sha);
+    if (ahead > 0) {
+      return fail(
+        `branch already exists in the target repository and carries ${ahead} commit(s) of work: ${branchName}`,
+        branchName,
+      );
+    }
+    const holder = await git.worktreeForBranch(ctx.repoPath, branchName);
+    if (holder) {
+      return fail(`branch ${branchName} already exists and is checked out in ${holder}`, branchName);
+    }
+    try {
+      await git.deleteBranch(ctx.repoPath, branchName);
+      detail(`reclaimed ${branchName} — an earlier run left it behind with no commits`);
+    } catch (err) {
+      return fail(`branch ${branchName} already exists and could not be reclaimed: ${(err as Error).message}`, branchName);
+    }
   }
   detail(`branch: ${branchName}`);
 
   // --- Step C: create the branch (harness owns the side effect) -------------
   await git.createBranch(worktree, branchName);
+  ownsBranch = true;
 
   if (ctx.dryRun) {
     step("🛑", "--dry-run: stopping before implementation (Jira untouched)");
     return { kind: "skipped", subtask, reason: `dry run — handoff OK, branch ${branchName} not implemented`, usage };
   }
 
-  // --- Step D: claim the Jira subtask (its own context, never fatal) --------
+  // --- Step D: claim the Jira subtask (three REST calls, never fatal) -------
   const spClaim = spin("📌", "Jira — assigning to you and moving to In Progress…");
   try {
-    const { claim, usage: claimUsage } = await claimSubtask({
-      subtask,
-      cwd: worktree,
-      model: ctx.model,
-      jiraTool: ctx.jiraTool,
-    });
+    const claim = await claimSubtask({ cfg: ctx.jira, subtask, user: ctx.jiraUser });
     const ok = claim.assigned && claim.transitioned;
     spClaim.stop(ok ? "📌" : "⚠️ ", `Jira — ${describeClaim(claim)}`);
     if (claim.note) detail(claim.note);
-    account(claimUsage);
   } catch (err) {
     // Never fatal: a Jira workflow hiccup must not block the engineering work.
     spClaim.stop("⚠️ ", `Jira — could not assign/transition: ${(err as Error).message.split("\n")[0]}`);
@@ -215,7 +257,7 @@ export async function runSubtask(
     const msgPath = path.join(artifacts, "commit-message.txt");
     await writeFile(msgPath, `${commitMessage}\n`);
     try {
-      await git.commit(worktree, msgPath);
+      await git.commit(worktree, msgPath, hooksPath);
       detail("committed leftover uncommitted changes");
     } catch (err) {
       return fail(`commit failed: ${(err as Error).message}`, branchName);
@@ -226,7 +268,7 @@ export async function runSubtask(
   try {
     const remote = await git.defaultRemote(ctx.repoPath);
     const spPush = spin("⬆️ ", `pushing ${branchName} → ${remote}…`);
-    await git.pushBranch(worktree, remote, branchName);
+    await git.pushBranch(worktree, remote, branchName, hooksPath);
     spPush.stop("⬆️ ", `pushed ${branchName} → ${remote}`);
   } catch (err) {
     return fail(`push failed: ${(err as Error).message}`, branchName);

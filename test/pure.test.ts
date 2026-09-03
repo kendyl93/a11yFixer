@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "../src/cli.js";
 import {
-  parseJiraKey, parseSurvey, isUnavailable, hasLabel, parseClaim, describeClaim, parsePlan,
-  jiraAccessBlock, validateHandoff, DEFAULT_JIRA_TOOL, DEFAULT_READY_LABEL,
-  HANDOFF_MARKER, jiraToolPrefix, jiraWriteSelectQuery,
+  parseJiraKey, isUnavailable, hasLabel, describeClaim, parsePlan,
+  validateHandoff, pickHandoffComment, DEFAULT_READY_LABEL, HANDOFF_MARKER,
 } from "../src/jira.js";
+import { siteFromUrl, pickInProgressTransition } from "../src/jira-api.js";
 import { formatDuration } from "../src/spinner.js";
 import { parseUsage, addUsage, emptyUsage, contextPercent, formatTokens, formatUsd, shortModel } from "../src/usage.js";
 import { extractJson, findSkill, readSkillBody, IMPLEMENT_SKILL } from "../src/claude.js";
@@ -61,52 +61,6 @@ test("isUnavailable skips reviewed and finished work, but not in-progress work",
   }
 });
 
-const survey = {
-  jiraMcpAvailable: true,
-  error: null,
-  parent: { key: "RAD-85350", url: "https://x/browse/RAD-85350", summary: "Parent" },
-  subtasks: [
-    { key: "RAD-1001", url: "https://x/browse/RAD-1001", summary: "One", status: "To Do", labels: ["ready-for-implementation"] },
-    { key: "rad-1002", url: "https://x/browse/RAD-1002", summary: "Two", status: null, labels: [] },
-  ],
-};
-
-test("parseSurvey normalises keys, keeps labels, and drops duplicates and the parent", () => {
-  const s = parseSurvey(
-    { ...survey, subtasks: [...survey.subtasks, survey.subtasks[0], { key: "RAD-85350", url: "u", summary: "s", labels: [] }] },
-    "RAD-85350",
-  );
-  assert.deepEqual(s.subtasks.map((x) => x.key), ["RAD-1001", "RAD-1002"]);
-  assert.deepEqual(s.subtasks[0]!.labels, ["ready-for-implementation"]);
-  assert.deepEqual(s.subtasks[1]!.labels, []);
-  assert.equal(s.subtasks[1]!.status, null);
-});
-
-test("parseSurvey reports unlabelled subtasks too, so a typo is visible", () => {
-  const s = parseSurvey(survey, "RAD-85350");
-  assert.equal(s.subtasks.length, 2);
-  assert.equal(s.subtasks.filter((x) => hasLabel(x, DEFAULT_READY_LABEL)).length, 1);
-});
-
-test("parseSurvey accepts zero subtasks", () => {
-  assert.deepEqual(parseSurvey({ ...survey, subtasks: [] }, "RAD-85350").subtasks, []);
-});
-
-test("parseSurvey fails loudly on missing MCP, errors, and parent mismatch", () => {
-  assert.throws(() => parseSurvey({ ...survey, jiraMcpAvailable: false }, "RAD-85350"), /Jira MCP unavailable/);
-  assert.throws(() => parseSurvey({ ...survey, error: "no access" }, "RAD-85350"), /no access/);
-  assert.throws(() => parseSurvey(survey, "RAD-999"), /expected RAD-999/);
-  assert.throws(() => parseSurvey(null, "RAD-1"), /no structured output/);
-});
-
-test("parseSurvey captures the exact Jira tool name and rejects junk", () => {
-  const withTool = { ...survey, jiraToolName: "mcp__claude_ai_Atlassian__getJiraIssue" };
-  assert.equal(parseSurvey(withTool, "RAD-85350").jiraTool, "mcp__claude_ai_Atlassian__getJiraIssue");
-  // A prose answer must not become a tool name.
-  assert.equal(parseSurvey({ ...survey, jiraToolName: "the jira tool" }, "RAD-85350").jiraTool, DEFAULT_JIRA_TOOL);
-  assert.equal(parseSurvey(survey, "RAD-85350").jiraTool, DEFAULT_JIRA_TOOL);
-});
-
 const sub = (labels: string[]) => ({ key: "RAD-1", url: "u", summary: "s", status: null, labels });
 
 test("hasLabel ignores case and stray whitespace but not typos", () => {
@@ -120,19 +74,70 @@ test("hasLabel ignores case and stray whitespace but not typos", () => {
 
 const HANDOFF = `${HANDOFF_MARKER}\n\nUse the existing IconButton primitive. ${"Give every control an accessible name. ".repeat(6)}`;
 
+const comment = (markdown: string, created = "2026-09-01T10:00:00.000+0000") => ({
+  author: "Paweł",
+  created,
+  markdown,
+});
+
 test("validateHandoff demands the marker heading and real substance", () => {
-  assert.deepEqual(validateHandoff({ found: true, handoff: HANDOFF }), { ok: true, markdown: HANDOFF.trim() });
+  const ok = validateHandoff(comment(HANDOFF), 1);
+  assert.equal(ok.ok, true);
+  assert.equal((ok as { markdown: string }).markdown, HANDOFF.trim());
+  assert.equal((ok as { author: string }).author, "Paweł");
+
   // Other heading levels and trailing words are still a handoff.
-  assert.equal(validateHandoff({ found: true, handoff: HANDOFF.replace("## Handoff", "### Handoff document") }).ok, true);
-  // Agent admitted it found nothing.
-  assert.equal(validateHandoff({ found: false, handoff: HANDOFF, error: "no comment" }).ok, false);
+  assert.equal(validateHandoff(comment(HANDOFF.replace("## Handoff", "### Handoff document")), 1).ok, true);
+
   // Prose with no marker is somebody's chatter, not an agreed plan.
-  const noMarker = validateHandoff({ found: true, handoff: "Looks good to me, ship it. ".repeat(20) });
+  const noMarker = validateHandoff(comment("Looks good to me, ship it. ".repeat(20)), 1);
   assert.equal(noMarker.ok, false);
   assert.match((noMarker as { error: string }).error, /Handoff/);
+
   // Marker present but empty underneath.
-  assert.equal(validateHandoff({ found: true, handoff: `${HANDOFF_MARKER}\ndo the thing` }).ok, false);
-  assert.equal(validateHandoff(null).ok, false);
+  assert.equal(validateHandoff(comment(`${HANDOFF_MARKER}\ndo the thing`), 1).ok, false);
+});
+
+test("validateHandoff says whether the subtask was silent or just off-topic", () => {
+  const silent = validateHandoff(null, 0);
+  assert.equal(silent.ok, false);
+  assert.match((silent as { error: string }).error, /no comments at all/);
+
+  const chatter = validateHandoff(null, 4);
+  assert.match((chatter as { error: string }).error, /4 comment\(s\)/);
+});
+
+test("pickHandoffComment takes the newest handoff, so a correction supersedes the original", () => {
+  const comments = [
+    comment(`${HANDOFF_MARKER}\n\nfirst plan`, "2026-09-01T10:00:00.000+0000"),
+    comment("unrelated chatter", "2026-09-01T11:00:00.000+0000"),
+    comment(`${HANDOFF_MARKER}\n\ncorrected plan`, "2026-09-01T12:00:00.000+0000"),
+  ];
+  assert.match(pickHandoffComment(comments)!.markdown, /corrected plan/);
+  assert.equal(pickHandoffComment([comment("no marker here")]), null);
+  assert.equal(pickHandoffComment([]), null);
+});
+
+test("siteFromUrl takes the Jira host from the run's own argument", () => {
+  assert.equal(siteFromUrl("https://user-testing.atlassian.net/browse/RAD-1"), "https://user-testing.atlassian.net");
+  assert.equal(siteFromUrl("RAD-1"), null);
+  assert.equal(siteFromUrl("ftp://x/browse/RAD-1"), null);
+});
+
+test("pickInProgressTransition prefers the named status, then the category, and never guesses", () => {
+  const t = (name: string, toStatus: string, toCategory: string, id = "1") =>
+    ({ id, name, toStatus, toCategory });
+
+  // An exactly-named target wins even when another indeterminate option comes first.
+  assert.equal(
+    pickInProgressTransition([t("Start review", "In Review", "indeterminate", "5"), t("Start", "In Progress", "indeterminate", "3")])!.id,
+    "3",
+  );
+  // Whatever the project calls its in-progress column, the category identifies it.
+  assert.equal(pickInProgressTransition([t("Begin", "Development", "indeterminate", "7")])!.id, "7");
+  // Nothing that moves work forward: refuse rather than risk closing the issue.
+  assert.equal(pickInProgressTransition([t("Done", "Done", "done"), t("Reject", "Cancelled", "done")]), null);
+  assert.equal(pickInProgressTransition([]), null);
 });
 
 test("the implement prompt inlines the skill body and the handoff path", async () => {
@@ -207,52 +212,41 @@ test("extractJson recovers JSON from fenced or prose output", () => {
   assert.equal(extractJson("no json here"), null);
 });
 
-test("parseClaim treats anything but an explicit true as not done", () => {
-  const c = parseClaim({ assigned: true, transitioned: true, assignee: "Piotr", status: "In Progress", error: null });
-  assert.deepEqual(c, { assigned: true, transitioned: true, assignee: "Piotr", status: "In Progress", error: null, note: "" });
-  assert.equal(parseClaim({ assigned: "yes", transitioned: 1 }).assigned, false);
-  assert.equal(parseClaim(null).transitioned, false);
-  assert.equal(parseClaim({ assigned: true, transitioned: true, assignee: "  " }).assignee, null);
+const claim = (over: Partial<Parameters<typeof describeClaim>[0]> = {}) => ({
+  assigned: true,
+  transitioned: true,
+  assignee: "Piotr",
+  status: "In Progress",
+  error: null,
+  note: "",
+  ...over,
 });
 
 test("describeClaim reports partial Jira failures instead of hiding them", () => {
-  assert.equal(
-    describeClaim(parseClaim({ assigned: true, transitioned: true, assignee: "Piotr", status: "In Progress" })),
-    "assigned to Piotr · In Progress",
-  );
-  const partial = describeClaim(parseClaim({ assigned: true, transitioned: false, assignee: "Piotr", error: "no transition found" }));
+  assert.equal(describeClaim(claim()), "assigned to Piotr · In Progress");
+
+  const partial = describeClaim(claim({ transitioned: false, error: "no transition found" }));
   assert.match(partial, /status UNCHANGED/);
   assert.match(partial, /no transition found/);
-  assert.match(describeClaim(parseClaim({ assigned: false, transitioned: false })), /NOT assigned/);
+
+  assert.match(describeClaim(claim({ assigned: false, transitioned: false })), /NOT assigned/);
+  // An unnamed account still reads as a sentence.
+  assert.match(describeClaim(claim({ assignee: null })), /assigned to you/);
 });
 
-test("jiraAccessBlock gives an exact select query, not a semantic search", () => {
-  const block = jiraAccessBlock("mcp__claude_ai_Atlassian__getJiraIssue");
-  assert.match(block, /select:mcp__claude_ai_Atlassian__getJiraIssue/);
-  assert.match(block, /prefix/);
-  // Extra tools are fully qualified with the same prefix, in the same one call.
-  const withJql = jiraAccessBlock("mcp__claude_ai_Atlassian__getJiraIssue", ["searchJiraIssuesUsingJql"]);
-  assert.match(withJql, /select:mcp__claude_ai_Atlassian__getJiraIssue,mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql/);
-});
+test("parseArgs keeps --fresh and --fresh-force distinct, and force implies fresh", () => {
+  const plain = parseArgs(["RAD-1", "--repo", "/r"]);
+  assert.equal(plain.fresh, false);
+  assert.equal(plain.freshForce, false);
 
-test("jiraWriteSelectQuery builds one exact multi-tool query from the discovered prefix", () => {
-  assert.equal(jiraToolPrefix("mcp__claude_ai_Atlassian__getJiraIssue"), "mcp__claude_ai_Atlassian__");
-  const q = jiraWriteSelectQuery("mcp__other__getJiraIssue");
-  assert.ok(q.startsWith("select:"));
-  // Every tool is fully qualified with the same prefix, comma separated, no spaces.
-  assert.ok(!q.includes(" "));
-  assert.match(q, /mcp__other__atlassianUserInfo/);
-  assert.match(q, /mcp__other__transitionJiraIssue/);
-  assert.equal(q.slice("select:".length).split(",").length, 6);
-});
+  const fresh = parseArgs(["RAD-1", "--repo", "/r", "--fresh"]);
+  assert.equal(fresh.fresh, true);
+  // Destroying committed work is never something --fresh alone can do.
+  assert.equal(fresh.freshForce, false);
 
-test("parseArgs validates --jira-tool", () => {
-  assert.equal(parseArgs(["RAD-1", "--repo", "/r"]).jiraTool, null);
-  assert.equal(
-    parseArgs(["RAD-1", "--repo", "/r", "--jira-tool", "mcp__foo__getJiraIssue"]).jiraTool,
-    "mcp__foo__getJiraIssue",
-  );
-  assert.throws(() => parseArgs(["RAD-1", "--repo", "/r", "--jira-tool", "atlassian"]), /full MCP tool name/);
+  const forced = parseArgs(["RAD-1", "--repo", "/r", "--fresh-force"]);
+  assert.equal(forced.fresh, true);
+  assert.equal(forced.freshForce, true);
 });
 
 test("parseArgs survives paste artifacts and explains a real stray argument", () => {

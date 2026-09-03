@@ -122,7 +122,10 @@ Three consequences worth knowing:
 - Node.js 20+, git, `gh` (authenticated)
 - Claude Code CLI on PATH, plus `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`)
 - The `implement`, `tdd` and `code-review` skills — [mattpocock/skills](https://github.com/mattpocock/skills)
-- Jira MCP (Atlassian) connected in Claude Code
+- A Jira API token — `export JIRA_API_TOKEN="..."` from
+  [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens). The site comes
+  from the parent URL you pass; the account email comes from `JIRA_EMAIL`, falling back to the
+  target repository's `git config user.email`
 - A target repository whose `AGENTS.md` is actually useful — every prompt defers to it for branch,
   commit, PR, testing and accessibility conventions
 
@@ -140,7 +143,8 @@ npm run ship-tickets -- https://you.atlassian.net/browse/RAD-85350 --repo ~/path
 | `--model <alias>` | model for every session, e.g. `opus` |
 | `--dry-run` | validate handoffs and name branches, then stop — no code, no Jira writes, no PR |
 | `--allow-missing-token` | skip the token check when the machine is already authenticated |
-| `--jira-tool <name>` | full MCP tool name for reading Jira, if your server is named differently |
+| `--fresh` | delete leftover branches and worktrees for the selected subtasks first — only ones with no commits |
+| `--fresh-force` | same, but also delete branches that carry commits (destroys work; the sha is printed for `git reflog`) |
 
 Start with `--dry-run`: it proves Jira works, shows which subtasks your labels actually selected,
 and validates every handoff — in about a minute.
@@ -187,7 +191,14 @@ The agent never sees `{{…}}`. Prompts total ~500 words: they say what the job 
 | `artifacts/*.json` | raw response from each session, with token and cost data |
 | `worktree/` | the isolated checkout and branch |
 
-Worktrees are never deleted, including on failure. Clean up with `git -C <repo> worktree prune`.
+Worktrees are never deleted, including on failure. Clean up with `git -C <repo> worktree prune`, or
+re-run with `--fresh` to clear the selected subtasks' branches and worktrees first.
+
+A failed run cleans up after itself as far as it safely can: a branch it created that has no
+commits is deleted, so retrying a subtask is never blocked by its own debris. A branch with commits
+is kept — that is an implementation somebody paid for, and only `--fresh-force` will remove it.
+Because branch names come from an agent reading your conventions, they are not predictable between
+runs, so `--fresh` matches on the subtask key rather than on a name.
 
 ## Limits
 
@@ -197,9 +208,11 @@ Worktrees are never deleted, including on failure. Clean up with `git -C <repo> 
   `Write` and `NotebookEdit` denied outright.
 - No harness-run verification and no separate reviewer: your skill self-reviews, and the draft PR
   is the human gate.
-- Jira MCP tools are deferred in Claude Code, and a *semantic* tool search silently returns
-  nothing — so every Jira prompt is handed an exact `select:` query instead. The tool name the
-  first agent actually used is threaded into all the others.
+- Jira is plain REST, not an agent. Reading subtasks, reading a handoff comment and claiming an
+  issue are CRUD, so they are HTTP calls with three retries each — deterministic, and free. Comment
+  bodies arrive as ADF and are converted to Markdown by `src/adf.ts`, so the implementation agent
+  reads what you wrote rather than a paraphrase of it. The one Jira phase that stays an agent is
+  the ordering decision, and it reads handoff files from disk, never Jira.
 - One Jira write, ever: assign + move to In Progress, on the subtask being implemented. Never on
   the parent, never to Done. Failure there is a warning, not a stop.
 - Subtasks run sequentially, and stacked ones must be merged in order. Nothing is ever merged
